@@ -9,6 +9,14 @@ const userSchema = new mongoose.Schema(
       trim: true,
       maxlength: [50, 'Name cannot exceed 50 characters'],
     },
+    studentNo: {
+      type: String,
+      required: [true, 'Please provide a student number'],
+      unique: true,
+      trim: true,
+      uppercase: true,
+      maxlength: [30, 'Student number cannot exceed 30 characters'],
+    },
     email: {
       type: String,
       required: [true, 'Please provide an email address'],
@@ -19,6 +27,10 @@ const userSchema = new mongoose.Schema(
         /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
         'Please provide a valid email address',
       ],
+    },
+    isSocietyMember: {
+      type: Boolean,
+      default: false,
     },
     password: {
       type: String,
@@ -53,7 +65,9 @@ userSchema.methods.toCleanObject = function () {
   return {
     id: this._id,
     name: this.name,
+    studentNo: this.studentNo,
     email: this.email,
+    isSocietyMember: this.isSocietyMember,
     createdAt: this.createdAt,
   };
 };

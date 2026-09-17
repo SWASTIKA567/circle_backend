@@ -3,6 +3,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const connectDB = require('./src/config/db');
 const authRoutes = require('./src/routes/authRoutes');
+const chatbotRoutes = require('./src/routes/chatbotRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -19,6 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/chatbot', chatbotRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -63,5 +65,6 @@ app.listen(PORT, () => {
   console.log(`  - POST http://localhost:${PORT}/api/auth/register`);
   console.log(`  - POST http://localhost:${PORT}/api/auth/login`);
   console.log(`  - GET  http://localhost:${PORT}/api/auth/me`);
+  console.log(`  - POST http://localhost:${PORT}/api/chatbot/ask`);
   console.log(`========================================`);
 });

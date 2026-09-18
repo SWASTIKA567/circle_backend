@@ -1,9 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
 const connectDB = require('./src/config/db');
 const authRoutes = require('./src/routes/authRoutes');
 const chatbotRoutes = require('./src/routes/chatbotRoutes');
+const noteRoutes = require('./src/routes/noteRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -18,9 +20,13 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve uploaded files statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/chatbot', chatbotRoutes);
+app.use('/api/notes', noteRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -66,5 +72,8 @@ app.listen(PORT, () => {
   console.log(`  - POST http://localhost:${PORT}/api/auth/login`);
   console.log(`  - GET  http://localhost:${PORT}/api/auth/me`);
   console.log(`  - POST http://localhost:${PORT}/api/chatbot/ask`);
+  console.log(`[Notes Endpoints]:`);
+  console.log(`  - GET  http://localhost:${PORT}/api/notes`);
+  console.log(`  - POST http://localhost:${PORT}/api/notes/upload`);
   console.log(`========================================`);
 });

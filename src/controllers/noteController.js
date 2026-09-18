@@ -24,7 +24,7 @@ exports.uploadNote = async (req, res) => {
       });
     }
 
-    const { title, subject, semester, author } = req.body;
+    const { title, subject, semester, unit, author } = req.body;
 
     if (!title || !subject) {
       // Remove uploaded file if validation fails
@@ -54,6 +54,7 @@ exports.uploadNote = async (req, res) => {
       title: title.trim(),
       subject: subject.trim(),
       semester: semester ? semester.trim() : 'Semester 1',
+      unit: unit ? unit.trim() : 'Unit 1',
       author: noteAuthor,
       uploadedBy,
       fileName: req.file.originalname,
@@ -98,6 +99,7 @@ exports.getAllNotes = async (req, res) => {
       filter.$or = [
         { title: searchRegex },
         { subject: searchRegex },
+        { unit: searchRegex },
         { author: searchRegex },
       ];
     }
@@ -158,3 +160,38 @@ exports.deleteNote = async (req, res) => {
     });
   }
 };
+
+// @desc    Download a note PDF file directly
+// @route   GET /api/notes/download/:id
+// @access  Public (Anyone can download)
+exports.downloadNote = async (req, res) => {
+  try {
+    const note = await Note.findById(req.params.id);
+
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found.',
+      });
+    }
+
+    const filePath = path.join(__dirname, '../../', note.fileUrl);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'PDF file not found on server.',
+      });
+    }
+
+    const downloadFileName = `${note.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+    return res.download(filePath, downloadFileName);
+  } catch (error) {
+    console.error('Error downloading note:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to download note.',
+    });
+  }
+};
+

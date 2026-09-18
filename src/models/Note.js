@@ -18,6 +18,11 @@ const noteSchema = new mongoose.Schema(
       default: 'Semester 1',
       trim: true,
     },
+    unit: {
+      type: String,
+      default: 'Unit 1',
+      trim: true,
+    },
     author: {
       type: String,
       default: 'Anonymous',

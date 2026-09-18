@@ -6,6 +6,7 @@ const connectDB = require('./src/config/db');
 const authRoutes = require('./src/routes/authRoutes');
 const chatbotRoutes = require('./src/routes/chatbotRoutes');
 const noteRoutes = require('./src/routes/noteRoutes');
+const societyRoutes = require('./src/routes/societyRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -27,6 +28,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', authRoutes);
 app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/notes', noteRoutes);
+app.use('/api/societies', societyRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -75,5 +77,9 @@ app.listen(PORT, () => {
   console.log(`[Notes Endpoints]:`);
   console.log(`  - GET  http://localhost:${PORT}/api/notes`);
   console.log(`  - POST http://localhost:${PORT}/api/notes/upload`);
+  console.log(`[Societies Endpoints]:`);
+  console.log(`  - GET  http://localhost:${PORT}/api/societies`);
+  console.log(`  - POST http://localhost:${PORT}/api/societies`);
+  console.log(`  - PUT  http://localhost:${PORT}/api/societies/:id`);
   console.log(`========================================`);
 });

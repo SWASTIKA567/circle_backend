@@ -80,6 +80,24 @@ const societySchema = new mongoose.Schema(
       default: 'Technical',
       enum: ['Technical', 'Cultural', 'Literary', 'Sports', 'General'],
     },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending',
+    },
+    isApproved: {
+      type: Boolean,
+      default: false,
+    },
+    approvedAt: {
+      type: Date,
+      default: null,
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

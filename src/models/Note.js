@@ -49,6 +49,24 @@ const noteSchema = new mongoose.Schema(
       type: String,
       default: 'PDF',
     },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending',
+    },
+    isApproved: {
+      type: Boolean,
+      default: false,
+    },
+    approvedAt: {
+      type: Date,
+      default: null,
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   {
     timestamps: true,

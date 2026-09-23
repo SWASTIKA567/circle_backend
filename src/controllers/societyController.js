@@ -74,13 +74,15 @@ exports.createSociety = async (req, res) => {
       recentEvents: Array.isArray(recentEvents) ? recentEvents : [],
       upcomingEvents: Array.isArray(upcomingEvents) ? upcomingEvents : [],
       category: category || 'Technical',
+      status: 'pending',
+      isApproved: false,
       createdBy: req.user._id,
       createdByName: req.user.name || 'Society Member',
     });
 
     return res.status(201).json({
       success: true,
-      message: 'Society created successfully!',
+      message: 'Society created successfully! It is submitted for Admin approval.',
       society: {
         id: newSociety._id,
         name: newSociety.name,
@@ -93,6 +95,8 @@ exports.createSociety = async (req, res) => {
         recentEvents: newSociety.recentEvents,
         upcomingEvents: newSociety.upcomingEvents,
         category: newSociety.category,
+        status: newSociety.status,
+        isApproved: newSociety.isApproved,
         createdByName: newSociety.createdByName,
         createdAt: newSociety.createdAt,
       },
@@ -106,13 +110,18 @@ exports.createSociety = async (req, res) => {
   }
 };
 
-// @desc    Get all societies (Public for all students)
+// @desc    Get all societies (Public for all students - ONLY approved)
 // @route   GET /api/societies
 // @access  Public
 exports.getAllSocieties = async (req, res) => {
   try {
     const { search, category, department } = req.query;
-    let filter = {};
+    let filter = {
+      $or: [
+        { status: 'approved' },
+        { isApproved: true },
+      ],
+    };
 
     if (category && category !== 'All') {
       filter.category = { $regex: new RegExp(`^${category}$`, 'i') };
@@ -124,12 +133,23 @@ exports.getAllSocieties = async (req, res) => {
 
     if (search && search.trim().length > 0) {
       const searchRegex = new RegExp(search.trim(), 'i');
-      filter.$or = [
-        { name: searchRegex },
-        { department: searchRegex },
-        { description: searchRegex },
-        { domains: searchRegex },
+      filter.$and = [
+        {
+          $or: [
+            { status: 'approved' },
+            { isApproved: true },
+          ],
+        },
+        {
+          $or: [
+            { name: searchRegex },
+            { department: searchRegex },
+            { description: searchRegex },
+            { domains: searchRegex },
+          ],
+        },
       ];
+      delete filter.$or;
     }
 
     const societies = await Society.find(filter).sort({ createdAt: -1 });
@@ -144,6 +164,96 @@ exports.getAllSocieties = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch societies.',
+    });
+  }
+};
+
+// @desc    Get all pending societies for Admin review
+// @route   GET /api/admin/pending-societies
+// @access  Admin
+exports.getPendingSocieties = async (req, res) => {
+  try {
+    const pendingSocieties = await Society.find({
+      $or: [
+        { status: 'pending' },
+        { isApproved: false, status: { $ne: 'rejected' } },
+      ],
+    }).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      count: pendingSocieties.length,
+      societies: pendingSocieties,
+    });
+  } catch (error) {
+    console.error('Error fetching pending societies:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending societies.',
+    });
+  }
+};
+
+// @desc    Approve a pending society
+// @route   PUT /api/admin/societies/:id/approve
+// @access  Admin
+exports.approveSociety = async (req, res) => {
+  try {
+    const society = await Society.findById(req.params.id);
+
+    if (!society) {
+      return res.status(404).json({
+        success: false,
+        message: 'Society not found.',
+      });
+    }
+
+    society.status = 'approved';
+    society.isApproved = true;
+    society.approvedAt = new Date();
+    society.approvedBy = req.user ? req.user._id : null;
+
+    await society.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Society "${society.name}" approved successfully!`,
+      society,
+    });
+  } catch (error) {
+    console.error('Error approving society:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to approve society.',
+    });
+  }
+};
+
+// @desc    Reject / delete a society
+// @route   DELETE /api/admin/societies/:id/reject
+// @access  Admin
+exports.rejectSociety = async (req, res) => {
+  try {
+    const society = await Society.findById(req.params.id);
+
+    if (!society) {
+      return res.status(404).json({
+        success: false,
+        message: 'Society not found.',
+      });
+    }
+
+    await society.deleteOne();
+
+    return res.status(200).json({
+      success: true,
+      message: `Society "${society.name}" rejected and removed.`,
+    });
+  } catch (error) {
+    console.error('Error rejecting society:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reject society.',
     });
   }
 };

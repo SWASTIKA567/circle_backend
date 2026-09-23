@@ -7,6 +7,7 @@ const authRoutes = require('./src/routes/authRoutes');
 const chatbotRoutes = require('./src/routes/chatbotRoutes');
 const noteRoutes = require('./src/routes/noteRoutes');
 const societyRoutes = require('./src/routes/societyRoutes');
+const adminRoutes = require('./src/routes/adminRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -29,6 +30,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/societies', societyRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

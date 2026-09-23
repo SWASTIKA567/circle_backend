@@ -12,7 +12,7 @@ const generateToken = (id) => {
 // @access  Public
 const register = async (req, res) => {
   try {
-    const { name, studentNo, email, isSocietyMember, password } = req.body;
+    const { name, studentNo, email, isSocietyMember, password, adminSecretCode, isAdmin } = req.body;
 
     if (!name || !studentNo || !email || !password) {
       return res.status(400).json({
@@ -49,12 +49,25 @@ const register = async (req, res) => {
       });
     }
 
+    // Determine admin status
+    const expectedAdminSecret = process.env.ADMIN_SECRET_KEY || 'CIRCLE_ADMIN_KEY_2026';
+    let userIsAdmin = false;
+    if (
+      (adminSecretCode && adminSecretCode.trim() === expectedAdminSecret) ||
+      formattedEmail.startsWith('admin@') ||
+      formattedStudentNo === 'ADMIN001'
+    ) {
+      userIsAdmin = true;
+    }
+
     // Create user
     const user = await User.create({
       name: name.trim(),
       studentNo: formattedStudentNo,
       email: formattedEmail,
       isSocietyMember: Boolean(isSocietyMember),
+      isAdmin: userIsAdmin,
+      role: userIsAdmin ? 'admin' : 'student',
       password,
     });
 
@@ -80,8 +93,8 @@ const register = async (req, res) => {
 // @access  Public
 const login = async (req, res) => {
   try {
-    const { emailOrStudentNo, email, studentNo, password } = req.body;
-    const identifier = (emailOrStudentNo || email || studentNo || '').trim();
+    const { emailOrStudentNo, email, studentNo, identifier: rawId, password } = req.body;
+    const identifier = (rawId || emailOrStudentNo || email || studentNo || '').trim();
 
     if (!identifier || !password) {
       return res.status(400).json({

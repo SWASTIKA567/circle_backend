@@ -61,11 +61,13 @@ exports.uploadNote = async (req, res) => {
       fileUrl,
       fileSize: req.file.size,
       pages: formattedSize, // Displays size / type in UI
+      status: 'pending',
+      isApproved: false,
     });
 
     return res.status(201).json({
       success: true,
-      message: 'Note uploaded successfully!',
+      message: 'Note uploaded successfully! It is submitted for Admin approval.',
       note: newNote,
     });
   } catch (error) {
@@ -82,13 +84,18 @@ exports.uploadNote = async (req, res) => {
   }
 };
 
-// @desc    Get all notes (with optional search and category filter)
+// @desc    Get all notes (with optional search and category filter) - Public: ONLY approved notes
 // @route   GET /api/notes
 // @access  Public
 exports.getAllNotes = async (req, res) => {
   try {
     const { search, category } = req.query;
-    let filter = {};
+    let filter = {
+      $or: [
+        { status: 'approved' },
+        { isApproved: true },
+      ],
+    };
 
     if (category && category !== 'All') {
       filter.subject = { $regex: new RegExp(`^${category}$`, 'i') };
@@ -96,12 +103,23 @@ exports.getAllNotes = async (req, res) => {
 
     if (search && search.trim().length > 0) {
       const searchRegex = new RegExp(search.trim(), 'i');
-      filter.$or = [
-        { title: searchRegex },
-        { subject: searchRegex },
-        { unit: searchRegex },
-        { author: searchRegex },
+      filter.$and = [
+        {
+          $or: [
+            { status: 'approved' },
+            { isApproved: true },
+          ],
+        },
+        {
+          $or: [
+            { title: searchRegex },
+            { subject: searchRegex },
+            { unit: searchRegex },
+            { author: searchRegex },
+          ],
+        },
       ];
+      delete filter.$or;
     }
 
     const notes = await Note.find(filter).sort({ createdAt: -1 });
@@ -116,6 +134,106 @@ exports.getAllNotes = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch notes.',
+    });
+  }
+};
+
+// @desc    Get all pending notes for Admin review
+// @route   GET /api/admin/pending-notes
+// @access  Admin
+exports.getPendingNotes = async (req, res) => {
+  try {
+    const pendingNotes = await Note.find({
+      $or: [
+        { status: 'pending' },
+        { isApproved: false, status: { $ne: 'rejected' } },
+      ],
+    }).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      count: pendingNotes.length,
+      notes: pendingNotes,
+    });
+  } catch (error) {
+    console.error('Error fetching pending notes:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending notes.',
+    });
+  }
+};
+
+// @desc    Approve a pending note
+// @route   PUT /api/admin/notes/:id/approve
+// @access  Admin
+exports.approveNote = async (req, res) => {
+  try {
+    const note = await Note.findById(req.params.id);
+
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found.',
+      });
+    }
+
+    note.status = 'approved';
+    note.isApproved = true;
+    note.approvedAt = new Date();
+    note.approvedBy = req.user ? req.user._id : null;
+
+    await note.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Note "${note.title}" approved successfully!`,
+      note,
+    });
+  } catch (error) {
+    console.error('Error approving note:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to approve note.',
+    });
+  }
+};
+
+// @desc    Reject / delete a note
+// @route   DELETE /api/admin/notes/:id/reject
+// @access  Admin
+exports.rejectNote = async (req, res) => {
+  try {
+    const note = await Note.findById(req.params.id);
+
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found.',
+      });
+    }
+
+    // Delete static file if present
+    if (note.fileUrl) {
+      const filePath = path.join(__dirname, '../../', note.fileUrl);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (_) {}
+      }
+    }
+
+    await note.deleteOne();
+
+    return res.status(200).json({
+      success: true,
+      message: `Note "${note.title}" rejected and deleted.`,
+    });
+  } catch (error) {
+    console.error('Error rejecting note:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reject note.',
     });
   }
 };

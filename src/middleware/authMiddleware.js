@@ -64,4 +64,17 @@ const optionalProtect = async (req, res, next) => {
   next();
 };
 
-module.exports = { protect, optionalProtect };
+const adminProtect = async (req, res, next) => {
+  // First verify user is authenticated
+  await protect(req, res, () => {
+    if (!req.user || (!req.user.isAdmin && req.user.role !== 'admin')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Administrator privileges required.',
+      });
+    }
+    next();
+  });
+};
+
+module.exports = { protect, optionalProtect, adminProtect };

@@ -32,6 +32,15 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isAdmin: {
+      type: Boolean,
+      default: false,
+    },
+    role: {
+      type: String,
+      enum: ['student', 'admin'],
+      default: 'student',
+    },
     password: {
       type: String,
       required: [true, 'Please provide a password'],
@@ -68,6 +77,8 @@ userSchema.methods.toCleanObject = function () {
     studentNo: this.studentNo,
     email: this.email,
     isSocietyMember: this.isSocietyMember,
+    isAdmin: this.isAdmin || this.role === 'admin',
+    role: this.role || (this.isAdmin ? 'admin' : 'student'),
     createdAt: this.createdAt,
   };
 };

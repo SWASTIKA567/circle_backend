@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Note = require('../models/Note');
+const cloudinary = require('../config/cloudinary');
 
 // Format file size nicely (e.g. 1.5 MB)
 const formatBytes = (bytes, decimals = 1) => {
@@ -10,6 +11,28 @@ const formatBytes = (bytes, decimals = 1) => {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+};
+
+// Helper to upload buffer to Cloudinary
+const uploadBufferToCloudinary = (fileBuffer, originalName) => {
+  return new Promise((resolve, reject) => {
+    const cleanName = originalName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: 'raw', // 'raw' ensures full PDF document integrity and exact byte preservation
+        folder: 'circle_notes',
+        public_id: `${Date.now()}_${cleanName}`,
+        format: 'pdf',
+      },
+      (error, result) => {
+        if (error) {
+          return reject(error);
+        }
+        resolve(result);
+      }
+    );
+    uploadStream.end(fileBuffer);
+  });
 };
 
 // @desc    Upload a new note (PDF)
@@ -27,10 +50,6 @@ exports.uploadNote = async (req, res) => {
     const { title, subject, semester, unit, author } = req.body;
 
     if (!title || !subject) {
-      // Remove uploaded file if validation fails
-      if (req.file.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
       return res.status(400).json({
         success: false,
         message: 'Title and subject are required fields.',
@@ -46,8 +65,28 @@ exports.uploadNote = async (req, res) => {
       uploadedBy = req.user._id;
     }
 
-    // Relative URL for serving static file
-    const fileUrl = `/uploads/notes/${req.file.filename}`;
+    let fileUrl = '';
+    let cloudinaryPublicId = null;
+
+    // Check if Cloudinary is configured
+    const hasCloudinary = Boolean(
+      process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+    );
+
+    if (hasCloudinary && req.file.buffer) {
+      // Upload directly to Cloudinary
+      const uploadResult = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname);
+      fileUrl = uploadResult.secure_url || uploadResult.url;
+      cloudinaryPublicId = uploadResult.public_id;
+    } else if (req.file.path) {
+      // Fallback for disk storage if used
+      fileUrl = `/uploads/notes/${req.file.filename}`;
+    } else {
+      throw new Error('File storage configuration error. Missing buffer or file path.');
+    }
+
     const formattedSize = formatBytes(req.file.size);
 
     const newNote = await Note.create({
@@ -59,8 +98,9 @@ exports.uploadNote = async (req, res) => {
       uploadedBy,
       fileName: req.file.originalname,
       fileUrl,
+      cloudinaryPublicId,
       fileSize: req.file.size,
-      pages: formattedSize, // Displays size / type in UI
+      pages: formattedSize,
       status: 'pending',
       isApproved: false,
     });
@@ -72,11 +112,6 @@ exports.uploadNote = async (req, res) => {
     });
   } catch (error) {
     console.error('Error uploading note:', error);
-    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (_) {}
-    }
     return res.status(500).json({
       success: false,
       message: error.message || 'Server error while uploading note.',
@@ -199,6 +234,26 @@ exports.approveNote = async (req, res) => {
   }
 };
 
+// Helper to remove note file (Cloudinary or local disk)
+const removeNoteFile = async (note) => {
+  if (note.cloudinaryPublicId) {
+    try {
+      await cloudinary.uploader.destroy(note.cloudinaryPublicId, { resource_type: 'raw' });
+    } catch (err) {
+      console.warn('Failed to delete Cloudinary file:', err.message);
+    }
+  } else if (note.fileUrl && !note.fileUrl.startsWith('http')) {
+    const filePath = path.join(__dirname, '../../', note.fileUrl);
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (err) {
+        console.warn('Could not delete local file:', filePath, err.message);
+      }
+    }
+  }
+};
+
 // @desc    Reject / delete a note
 // @route   DELETE /api/admin/notes/:id/reject
 // @access  Admin
@@ -213,16 +268,7 @@ exports.rejectNote = async (req, res) => {
       });
     }
 
-    // Delete static file if present
-    if (note.fileUrl) {
-      const filePath = path.join(__dirname, '../../', note.fileUrl);
-      if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch (_) {}
-      }
-    }
-
+    await removeNoteFile(note);
     await note.deleteOne();
 
     return res.status(200).json({
@@ -252,18 +298,7 @@ exports.deleteNote = async (req, res) => {
       });
     }
 
-    // Attempt to remove physical file
-    if (note.fileUrl) {
-      const filePath = path.join(__dirname, '../../', note.fileUrl);
-      if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch (err) {
-          console.warn('Could not delete file:', filePath, err);
-        }
-      }
-    }
-
+    await removeNoteFile(note);
     await note.deleteOne();
 
     return res.status(200).json({
@@ -293,6 +328,12 @@ exports.downloadNote = async (req, res) => {
       });
     }
 
+    // If hosted on Cloudinary or external URL, redirect directly
+    if (note.fileUrl && note.fileUrl.startsWith('http')) {
+      return res.redirect(note.fileUrl);
+    }
+
+    // Local file fallback
     const filePath = path.join(__dirname, '../../', note.fileUrl);
 
     if (!fs.existsSync(filePath)) {
@@ -312,4 +353,3 @@ exports.downloadNote = async (req, res) => {
     });
   }
 };
-

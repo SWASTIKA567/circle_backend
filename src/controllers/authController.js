@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 const User = require('../models/User');
 
 const generateToken = (id) => {
@@ -7,7 +8,40 @@ const generateToken = (id) => {
   });
 };
 
-// @desc    Register a new user (with Student No. and Society Member status)
+// Helper: Call AKGEC ERP Token API (Format A: x-www-form-urlencoded)
+const fetchErpToken = async (username, password) => {
+  const params = new URLSearchParams();
+  params.append('grant_type', 'password');
+  params.append('username', username.trim());
+  params.append('password', password);
+
+  const response = await axios.post('https://erp.akgec.ac.in/Token', params.toString(), {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    },
+    timeout: 20000,
+  });
+
+  return response.data; // Expected { access_token, token_type, expires_in, ... }
+};
+
+// Helper: Call AKGEC ERP User API
+const fetchErpUserData = async (erpAccessToken) => {
+  const response = await axios.get('https://erp.akgec.ac.in/api/User', {
+    headers: {
+      'Authorization': `Bearer ${erpAccessToken}`,
+      'Accept': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    },
+    timeout: 20000,
+  });
+
+  return response.data;
+};
+
+// @desc    Register a new user (fallback / direct register if needed)
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res) => {
@@ -95,7 +129,7 @@ const register = async (req, res) => {
   }
 };
 
-// @desc    Login user with Email or Student No & return JWT
+// @desc    Login user via AKGEC ERP Token & User APIs (or local DB fallback)
 // @route   POST /api/auth/login
 // @access  Public
 const login = async (req, res) => {
@@ -106,11 +140,104 @@ const login = async (req, res) => {
     if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Please enter your email or student number and password',
+        message: 'Please enter your student number or college email and password',
       });
     }
 
-    // Find user by either email or student number
+    let erpSuccess = false;
+    let erpData = null;
+
+    // 1. Try Authenticating with AKGEC ERP Token Endpoint
+    try {
+      console.log(`[ERP Auth] Attempting Token generation for: ${identifier}`);
+      const tokenResponse = await fetchErpToken(identifier, password);
+      const erpAccessToken = tokenResponse.access_token || tokenResponse.token;
+
+      if (erpAccessToken) {
+        console.log(`[ERP Auth] Token obtained! Calling https://erp.akgec.ac.in/api/User`);
+        erpData = await fetchErpUserData(erpAccessToken);
+        console.log(`[ERP Auth] User data received for: ${erpData.firstName || identifier}`);
+        erpSuccess = true;
+      }
+    } catch (erpError) {
+      console.warn('[ERP Auth Warning]:', erpError.response?.data || erpError.message);
+      // Fallback allowed for existing DB / test accounts
+    }
+
+    // 2. If ERP succeeded, sync/create user in MongoDB with all ERP details
+    if (erpSuccess && erpData) {
+      const studentNoFromErp = (erpData.admissionNo || identifier).trim().toUpperCase();
+      const userEmail = (erpData.email || `${studentNoFromErp.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
+      const fullName = `${erpData.firstName || ''} ${erpData.lastName || ''}`.trim() || identifier;
+
+      let user = await User.findOne({
+        $or: [
+          { studentNo: studentNoFromErp },
+          { email: userEmail },
+        ],
+      });
+
+      if (!user) {
+        // Create new user automatically from ERP data
+        user = await User.create({
+          name: fullName,
+          firstName: erpData.firstName || '',
+          lastName: erpData.lastName || '',
+          studentNo: studentNoFromErp,
+          admissionNo: erpData.admissionNo || studentNoFromErp,
+          email: userEmail,
+          course: erpData.course || '',
+          branch: erpData.branch || '',
+          semester: erpData.semester ? `Semester ${erpData.semester}`.replace('Semester Semester', 'Semester') : 'Semester 1',
+          mobileNo: erpData.mobileNo || '',
+          dob: erpData.dob || '',
+          bloodGroup: erpData.bloodGroup || '',
+          fatherName: erpData.fatherName || '',
+          motherName: erpData.motherName || '',
+          jeeRank: erpData.jeeRank ?? null,
+          highSchoolPercentage: erpData.highSchoolPercentage || '',
+          intermediatePercentage: erpData.intermediatePercentage || '',
+          bankName: erpData.bankName || '',
+          ifscCode: erpData.ifscCode || '',
+          address: erpData.address || '',
+          password: password, // Save so user can also authenticate if ERP is temporarily down
+        });
+      } else {
+        // Update user record with latest ERP details
+        user.name = fullName;
+        user.firstName = erpData.firstName || user.firstName;
+        user.lastName = erpData.lastName || user.lastName;
+        user.course = erpData.course || user.course;
+        user.branch = erpData.branch || user.branch;
+        if (erpData.semester) {
+          user.semester = `Semester ${erpData.semester}`.replace('Semester Semester', 'Semester');
+        }
+        user.mobileNo = erpData.mobileNo || user.mobileNo;
+        user.dob = erpData.dob || user.dob;
+        user.bloodGroup = erpData.bloodGroup || user.bloodGroup;
+        user.fatherName = erpData.fatherName || user.fatherName;
+        user.motherName = erpData.motherName || user.motherName;
+        user.jeeRank = erpData.jeeRank ?? user.jeeRank;
+        user.highSchoolPercentage = erpData.highSchoolPercentage || user.highSchoolPercentage;
+        user.intermediatePercentage = erpData.intermediatePercentage || user.intermediatePercentage;
+        user.bankName = erpData.bankName || user.bankName;
+        user.ifscCode = erpData.ifscCode || user.ifscCode;
+        user.address = erpData.address || user.address;
+        user.password = password;
+        await user.save();
+      }
+
+      const token = generateToken(user._id);
+
+      return res.status(200).json({
+        success: true,
+        message: 'AKGEC ERP verification successful! Logged in.',
+        token,
+        user: user.toCleanObject(),
+      });
+    }
+
+    // 3. Fallback: Check local MongoDB credentials (for admins or previously registered users)
     const user = await User.findOne({
       $or: [
         { email: identifier.toLowerCase() },
@@ -121,16 +248,15 @@ const login = async (req, res) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials',
+        message: 'Invalid AKGEC ERP credentials or account not found.',
       });
     }
 
-    // Compare password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials',
+        message: 'Invalid ERP password.',
       });
     }
 

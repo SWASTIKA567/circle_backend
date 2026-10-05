@@ -28,8 +28,15 @@ const register = async (req, res) => {
       });
     }
 
-    const formattedStudentNo = studentNo.trim().toUpperCase();
     const formattedEmail = email.toLowerCase().trim();
+    if (!formattedEmail.endsWith('@akgec.ac.in')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only college email addresses ending with @akgec.ac.in are allowed',
+      });
+    }
+
+    const formattedStudentNo = studentNo.trim().toUpperCase();
 
     // Check if student number already exists
     const existingStudentNo = await User.findOne({ studentNo: formattedStudentNo });

@@ -27,14 +27,24 @@ const fetchErpToken = async (username, password) => {
   return response.data; // Expected { access_token, token_type, expires_in, ... }
 };
 
-// Helper: Call AKGEC ERP User API
-const fetchErpUserData = async (erpAccessToken) => {
+// Helper: Call AKGEC ERP User API with required organization headers
+const fetchErpUserData = async (erpAccessToken, tokenData = {}) => {
+  // eCanvas Web API requires organization headers
+  // Check if token returned org info or use AKGEC standard orgId (e.g. 1)
+  const orgId = tokenData.organizationId || tokenData.orgId || tokenData.OrganizationId || '1';
+
+  const headers = {
+    'Authorization': `Bearer ${erpAccessToken}`,
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'OrganizationId': String(orgId),
+    'organization_id': String(orgId),
+    'OrgId': String(orgId),
+    'orgId': String(orgId),
+  };
+
   const response = await axios.get('https://erp.akgec.ac.in/api/User', {
-    headers: {
-      'Authorization': `Bearer ${erpAccessToken}`,
-      'Accept': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    },
+    headers: headers,
     timeout: 20000,
   });
 
@@ -149,14 +159,35 @@ const login = async (req, res) => {
 
     // 1. Try Authenticating with AKGEC ERP Token Endpoint
     try {
-      console.log(`[ERP Auth] Attempting Token generation for: ${identifier}`);
-      const tokenResponse = await fetchErpToken(identifier, password);
+      // Determine probable username (if email is entered, extract numbers or user handle)
+      let erpUsername = identifier;
+      if (identifier.includes('@')) {
+        const localPart = identifier.split('@')[0];
+        const match = localPart.match(/\d+/);
+        // If digits exist in email (e.g. 2413200 in swastika2413200), use that; else local part
+        erpUsername = match ? match[0] : localPart;
+      }
+
+      console.log(`[ERP Auth] Attempting Token generation for: ${erpUsername} (original: ${identifier})`);
+      let tokenResponse;
+      try {
+        tokenResponse = await fetchErpToken(erpUsername, password);
+      } catch (firstErr) {
+        // If extracted username failed and was different from identifier, try with original identifier as fallback
+        if (erpUsername !== identifier) {
+          console.log(`[ERP Auth] Retrying with original identifier: ${identifier}`);
+          tokenResponse = await fetchErpToken(identifier, password);
+        } else {
+          throw firstErr;
+        }
+      }
+
       const erpAccessToken = tokenResponse.access_token || tokenResponse.token;
 
       if (erpAccessToken) {
-        console.log(`[ERP Auth] Token obtained! Calling https://erp.akgec.ac.in/api/User`);
-        erpData = await fetchErpUserData(erpAccessToken);
-        console.log(`[ERP Auth] User data received for: ${erpData.firstName || identifier}`);
+        console.log(`[ERP Auth] Token obtained! Keys:`, Object.keys(tokenResponse));
+        erpData = await fetchErpUserData(erpAccessToken, tokenResponse);
+        console.log(`[ERP Auth] User data received for: ${erpData?.firstName || identifier}`);
         erpSuccess = true;
       }
     } catch (erpError) {

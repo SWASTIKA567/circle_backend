@@ -17,6 +17,11 @@ const eventSchema = new mongoose.Schema({
     default: '',
     trim: true,
   },
+  time: {
+    type: String,
+    default: '',
+    trim: true,
+  },
   registrationLink: {
     type: String,
     default: '',

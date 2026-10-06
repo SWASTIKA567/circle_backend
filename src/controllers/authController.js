@@ -217,40 +217,90 @@ const login = async (req, res) => {
       // Fallback allowed for existing DB / test accounts
     }
 
-    // 2. If ERP succeeded, sync/create user in MongoDB with all ERP details
+    // 2. If ERP succeeded, find the EXACT logged-in student in the ERP list
     if (erpSuccess && erpData) {
-      // Handle array or nested wrapper (e.g. [ { ... } ] or { data: { ... } } or { user: { ... } })
-      let profile = erpData;
-      if (Array.isArray(profile) && profile.length > 0) {
-        profile = profile[0];
-      } else if (profile.data && typeof profile.data === 'object') {
-        profile = Array.isArray(profile.data) ? profile.data[0] : profile.data;
-      } else if (profile.user && typeof profile.user === 'object') {
-        profile = profile.user;
+      let rawList = erpData;
+      if (rawList && rawList.data && Array.isArray(rawList.data)) rawList = rawList.data;
+      if (!Array.isArray(rawList)) rawList = [rawList];
+
+      const cleanId = identifier.trim().toLowerCase();
+      console.log(`[ERP Auth] Searching for student '${cleanId}' in ERP list of ${rawList.length} records...`);
+
+      // Find the student record that matches identifier (admission number, roll number, email, or name)
+      let matchedItem = rawList.find((item) => {
+        if (!item) return false;
+        const adm = String(item.admissionNumber || item.admissionNo || '').toLowerCase();
+        const roll = String(item.rollNumber || item.rollNo || '').toLowerCase();
+        const mail = String(item.email || '').toLowerCase();
+        const uid = String(item.userId || '').toLowerCase();
+
+        return (
+          adm === cleanId ||
+          roll === cleanId ||
+          mail === cleanId ||
+          uid === cleanId ||
+          cleanId.includes(adm) ||
+          adm.includes(cleanId)
+        );
+      });
+
+      // If no exact admissionNo match, check inside userDetails of each record
+      if (!matchedItem) {
+        matchedItem = rawList.find((item) => {
+          if (!item || !item.userDetails) return false;
+          try {
+            const parsed = typeof item.userDetails === 'string' ? JSON.parse(item.userDetails) : item.userDetails;
+            const adm = String(parsed.admissionNumber || parsed.admissionNo || '').toLowerCase();
+            const roll = String(parsed.rollNumber || parsed.jeeRollNumber || '').toLowerCase();
+            const mail = String(parsed.email || '').toLowerCase();
+            return (
+              adm === cleanId ||
+              roll === cleanId ||
+              mail === cleanId ||
+              cleanId.includes(adm) ||
+              adm.includes(cleanId)
+            );
+          } catch (_) {
+            return false;
+          }
+        });
       }
 
-      console.log(`[ERP Auth Normalized Profile]:`, profile);
+      // Fallback to first if only one record returned or not found
+      let profile = matchedItem || rawList[0];
 
-      const fName = profile.firstName || profile.FirstName || profile.first_name || '';
-      const lName = profile.lastName || profile.LastName || profile.last_name || '';
-      const admNo = (profile.admissionNo || profile.AdmissionNo || profile.studentNo || profile.StudentNo || identifier).trim().toUpperCase();
-      const uEmail = (profile.email || profile.Email || `${admNo.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
-      const fNameFull = `${fName} ${lName}`.trim() || profile.name || profile.Name || identifier;
-      const cCourse = profile.course || profile.Course || '';
-      const bBranch = profile.branch || profile.Branch || '';
-      const rawSem = profile.semester || profile.Semester || '';
-      const sSemester = rawSem ? `Semester ${rawSem}`.replace('Semester Semester', 'Semester') : 'Semester 1';
-      const mMobile = profile.mobileNo || profile.MobileNo || profile.mobile || profile.Mobile || '';
-      const dDob = profile.dob || profile.DOB || profile.dateOfBirth || '';
-      const bBlood = profile.bloodGroup || profile.BloodGroup || '';
-      const fFather = profile.fatherName || profile.FatherName || '';
-      const mMother = profile.motherName || profile.MotherName || '';
-      const jJee = profile.jeeRank ?? profile.JeeRank ?? null;
-      const hHigh = profile.highSchoolPercentage || profile.HighSchoolPercentage || '';
-      const iInter = profile.intermediatePercentage || profile.IntermediatePercentage || '';
-      const bBank = profile.bankName || profile.BankName || '';
-      const iIfsc = profile.ifscCode || profile.IfscCode || '';
-      const aAddr = profile.address || profile.Address || '';
+      // Parse nested userDetails if it exists as a JSON string
+      let deepDetails = {};
+      if (profile.userDetails) {
+        try {
+          deepDetails = typeof profile.userDetails === 'string' ? JSON.parse(profile.userDetails) : profile.userDetails;
+        } catch (_) {}
+      }
+
+      console.log(`[ERP Auth] Matched Student:`, profile.firstName, profile.lastName, 'AdmissionNo:', profile.admissionNumber);
+
+      const fName = profile.firstName || deepDetails.firstName || '';
+      const lName = profile.lastName || deepDetails.lastName || '';
+      const admNo = (deepDetails.admissionNumber || profile.admissionNumber || deepDetails.admissionNo || profile.admissionNo || identifier).trim().toUpperCase();
+      const uEmail = (deepDetails.email || profile.email || `${admNo.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
+      const fNameFull = `${fName} ${lName}`.trim() || profile.name || identifier;
+      
+      const cCourse = deepDetails.selectedCourse || profile.courseName || deepDetails.courseTitle || profile.batchName?.split('(')[0] || 'B.TECH';
+      const bBranch = deepDetails.selectedBranch || profile.branchName || deepDetails.branchCode || 'CSE';
+      const rawSem = deepDetails.selectedSemester || profile.semester || '';
+      const sSemester = rawSem ? `Semester ${rawSem}`.replace('Semester Semester', 'Semester').replace('Sem-', 'Semester ') : 'Semester 1';
+      
+      const mMobile = deepDetails.phone || deepDetails.smsMobileNumber || profile.parentMobileNumber || deepDetails.parentPhone || '';
+      const dDob = deepDetails.dob || profile.dob || '';
+      const bBlood = deepDetails.bloodGroup || profile.bloodGroup || '';
+      const fFather = deepDetails.fatherName || profile.fatherName || '';
+      const mMother = deepDetails.motherName || profile.motherName || '';
+      const jJee = deepDetails.jeeRank || profile.jeeRank || null;
+      const hHigh = deepDetails.tenthClassPercentage || profile.tenthPercentageObtained || '';
+      const iInter = deepDetails.twelthClassPercentage || profile.twelfthpercentageObtained || '';
+      const bBank = deepDetails.nameOfBank || profile.bankName || '';
+      const iIfsc = deepDetails.iFSCCode || profile.ifsccode || '';
+      const aAddr = deepDetails.address || profile.address || deepDetails.permenentAddress || '';
 
       let user = await User.findOne({
         $or: [

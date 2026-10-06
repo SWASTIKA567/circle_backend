@@ -178,6 +178,7 @@ const login = async (req, res) => {
 
     let erpSuccess = false;
     let erpData = null;
+    let tokenData = null;
 
     // 1. Try Authenticating with AKGEC ERP Token Endpoint
     try {
@@ -207,6 +208,7 @@ const login = async (req, res) => {
       const erpAccessToken = tokenResponse.access_token || tokenResponse.token;
 
       if (erpAccessToken) {
+        tokenData = tokenResponse;
         console.log(`[ERP Auth] Token obtained! Keys:`, Object.keys(tokenResponse));
         erpData = await fetchErpUserData(erpAccessToken, tokenResponse);
         console.log(`[ERP Auth] Raw /api/User Response:`, JSON.stringify(erpData));
@@ -224,41 +226,46 @@ const login = async (req, res) => {
       if (!Array.isArray(rawList)) rawList = [rawList];
 
       const cleanId = identifier.trim().toLowerCase();
-      console.log(`[ERP Auth] Searching for student '${cleanId}' in ERP list of ${rawList.length} records...`);
+      const targetUserId = String(tokenData?.['X-UserId'] || tokenData?.userId || tokenData?.UserId || '').trim();
+      console.log(`[ERP Auth] Searching for student '${cleanId}' (targetUserId: '${targetUserId}') in ERP list of ${rawList.length} records...`);
 
-      // Find the student record that matches identifier (admission number, roll number, email, or name)
-      let matchedItem = rawList.find((item) => {
-        if (!item) return false;
-        const adm = String(item.admissionNumber || item.admissionNo || '').toLowerCase();
-        const roll = String(item.rollNumber || item.rollNo || '').toLowerCase();
-        const mail = String(item.email || '').toLowerCase();
-        const uid = String(item.userId || '').toLowerCase();
+      // Priority 1: Match by exact ERP userId returned from /Token endpoint
+      let matchedItem = null;
+      if (targetUserId) {
+        matchedItem = rawList.find((item) => item && String(item.userId || item.id || '').trim() === targetUserId);
+      }
 
-        return (
-          adm === cleanId ||
-          roll === cleanId ||
-          mail === cleanId ||
-          uid === cleanId ||
-          cleanId.includes(adm) ||
-          adm.includes(cleanId)
-        );
-      });
+      // Priority 2: Match by exact admissionNumber, rollNumber, or email
+      if (!matchedItem) {
+        matchedItem = rawList.find((item) => {
+          if (!item) return false;
+          const adm = String(item.admissionNumber || item.admissionNo || '').trim().toLowerCase();
+          const roll = String(item.rollNumber || item.rollNo || '').trim().toLowerCase();
+          const mail = String(item.email || '').trim().toLowerCase();
+          const uid = String(item.userId || '').trim().toLowerCase();
 
-      // If no exact admissionNo match, check inside userDetails of each record
+          return (
+            (adm && (adm === cleanId || cleanId.includes(adm) || adm.includes(cleanId))) ||
+            (roll && (roll === cleanId || cleanId.includes(roll) || roll.includes(cleanId))) ||
+            (mail && (mail === cleanId || cleanId.includes(mail) || mail.includes(cleanId))) ||
+            (uid && uid === cleanId)
+          );
+        });
+      }
+
+      // Priority 3: Match inside userDetails
       if (!matchedItem) {
         matchedItem = rawList.find((item) => {
           if (!item || !item.userDetails) return false;
           try {
             const parsed = typeof item.userDetails === 'string' ? JSON.parse(item.userDetails) : item.userDetails;
-            const adm = String(parsed.admissionNumber || parsed.admissionNo || '').toLowerCase();
-            const roll = String(parsed.rollNumber || parsed.jeeRollNumber || '').toLowerCase();
-            const mail = String(parsed.email || '').toLowerCase();
+            const adm = String(parsed.admissionNumber || parsed.admissionNo || '').trim().toLowerCase();
+            const roll = String(parsed.rollNumber || parsed.jeeRollNumber || '').trim().toLowerCase();
+            const mail = String(parsed.email || '').trim().toLowerCase();
             return (
-              adm === cleanId ||
-              roll === cleanId ||
-              mail === cleanId ||
-              cleanId.includes(adm) ||
-              adm.includes(cleanId)
+              (adm && (adm === cleanId || cleanId.includes(adm) || adm.includes(cleanId))) ||
+              (roll && (roll === cleanId || cleanId.includes(roll) || roll.includes(cleanId))) ||
+              (mail && (mail === cleanId || cleanId.includes(mail) || mail.includes(cleanId)))
             );
           } catch (_) {
             return false;
@@ -285,10 +292,83 @@ const login = async (req, res) => {
       const uEmail = (deepDetails.email || profile.email || `${admNo.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
       const fNameFull = `${fName} ${lName}`.trim() || profile.name || identifier;
       
-      const cCourse = deepDetails.selectedCourse || profile.courseName || deepDetails.courseTitle || profile.batchName?.split('(')[0] || 'B.TECH';
-      const bBranch = deepDetails.selectedBranch || profile.branchName || deepDetails.branchCode || 'CSE';
-      const rawSem = deepDetails.selectedSemester || profile.semester || '';
-      const sSemester = rawSem ? `Semester ${rawSem}`.replace('Semester Semester', 'Semester').replace('Sem-', 'Semester ') : 'Semester 1';
+      // 1. Parse Course (e.g. B.Tech, MCA)
+      let cCourse = deepDetails.selectedCourse || profile.courseName || deepDetails.courseTitle || profile.batchName?.split('(')[0] || 'B.Tech';
+      if (/^B\.?TECH/i.test(cCourse)) cCourse = 'B.Tech';
+      if (/^MCA/i.test(cCourse)) cCourse = 'MCA';
+
+      // 2. Parse Semester (extract current active semester from batchName, fallback to deepDetails)
+      let semNum = null;
+      const bName = profile.batchName || '';
+      if (bName) {
+        if (/VIII\s*Sem/i.test(bName)) semNum = '8';
+        else if (/VII\s*Sem/i.test(bName)) semNum = '7';
+        else if (/VI\s*Sem/i.test(bName)) semNum = '6';
+        else if (/V\s*Sem/i.test(bName)) semNum = '5';
+        else if (/IV\s*Sem/i.test(bName)) semNum = '4';
+        else if (/III\s*Sem/i.test(bName)) semNum = '3';
+        else if (/II\s*Sem/i.test(bName)) semNum = '2';
+        else if (/I\s*Sem/i.test(bName)) semNum = '1';
+        else {
+          const semMatch = bName.match(/(\d+)\s*(?:st|nd|rd|th)?\s*Sem/i);
+          if (semMatch) semNum = semMatch[1];
+        }
+      }
+
+      if (!semNum && (deepDetails.selectedSemester || profile.semester)) {
+        const rawSemStr = String(deepDetails.selectedSemester || profile.semester || '');
+        const match = rawSemStr.match(/\d+/);
+        if (match) semNum = match[0];
+      }
+
+      const sSemester = semNum ? `Semester ${semNum}` : 'Semester 1';
+
+      // 3. Parse Branch (extract from batchName, admission number code, or deepDetails)
+      const branchMap = {
+        'IT': 'Information Technology',
+        'CSE': 'Computer Science & Engineering',
+        'CS': 'Computer Science',
+        'CSIT': 'Computer Science & Information Technology',
+        'ECE': 'Electronics & Communication Engineering',
+        'EN': 'Electrical & Electronics Engineering',
+        'ME': 'Mechanical Engineering',
+        'CIVIL': 'Civil Engineering',
+        'CE': 'Civil Engineering',
+        'MCA': 'Master of Computer Applications',
+      };
+
+      let parsedBranch = '';
+      if (bName) {
+        const semPart = bName.split(/Sem[_\s]+/i)[1];
+        if (semPart) {
+          const match = semPart.match(/^([A-Za-z]+(?:\([A-Za-z+ ]+\))?)/);
+          if (match) parsedBranch = match[1].trim();
+        }
+      }
+
+      let bBranch = deepDetails.selectedBranch || profile.branchName || '';
+      if (!bBranch || bBranch.toLowerCase().includes('year')) {
+        bBranch = parsedBranch || '';
+      }
+
+      // AKGEC Admission number branch decoding fallback (e.g. 2413200 -> 13 -> IT)
+      if ((!bBranch || bBranch.toLowerCase().includes('year')) && admNo.length >= 4) {
+        const code3 = admNo.substring(2, 5);
+        const code = admNo.substring(2, 4);
+        if (code3 === '154' || code3 === '151') bBranch = 'CSE (AIML & DS)';
+        else if (code === '10') bBranch = 'CSE';
+        else if (code === '11') bBranch = 'CSIT';
+        else if (code === '12') bBranch = 'CS';
+        else if (code === '13') bBranch = 'IT';
+        else if (code === '14') bBranch = 'MCA';
+        else if (code === '20' || code === '21') bBranch = 'EN';
+        else if (code === '31') bBranch = 'ECE';
+        else if (code === '40') bBranch = 'ME';
+        else if (code === '00') bBranch = 'Civil Engineering';
+      }
+
+      const niceBranch = branchMap[bBranch.toUpperCase()] || bBranch || 'Computer Science & Engineering';
+      bBranch = niceBranch;
       
       const mMobile = deepDetails.phone || deepDetails.smsMobileNumber || profile.parentMobileNumber || deepDetails.parentPhone || '';
       const dDob = deepDetails.dob || profile.dob || '';

@@ -506,8 +506,37 @@ const getMe = async (req, res) => {
   }
 };
 
+// @desc    Update society member status
+// @route   PUT /api/auth/society-status
+// @access  Private (Protected by JWT)
+const updateSocietyStatus = async (req, res) => {
+  try {
+    const { isSocietyMember } = req.body;
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    user.isSocietyMember = Boolean(isSocietyMember);
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Society status updated successfully',
+      user: user.toCleanObject(),
+    });
+  } catch (error) {
+    console.error('UpdateSocietyStatus error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error updating society status',
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   getMe,
+  updateSocietyStatus,
 };
+

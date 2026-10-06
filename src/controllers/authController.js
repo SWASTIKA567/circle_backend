@@ -27,21 +27,43 @@ const fetchErpToken = async (username, password) => {
   return response.data; // Expected { access_token, token_type, expires_in, ... }
 };
 
-// Helper: Call AKGEC ERP User API with required organization headers
+// Helper: Call AKGEC ERP User API with required eCanvas headers from Token response
 const fetchErpUserData = async (erpAccessToken, tokenData = {}) => {
-  // eCanvas Web API requires organization headers
-  // Check if token returned org info or use AKGEC standard orgId (e.g. 1)
-  const orgId = tokenData.organizationId || tokenData.orgId || tokenData.OrganizationId || '1';
+  // eCanvas Web API requires the context headers returned from the /Token endpoint
+  const contextId = tokenData['X-ContextId'] || tokenData.contextId || '1';
+  const userId = tokenData['X-UserId'] || '';
+  const rx = tokenData['X-RX'] || '';
+  const sessionId = tokenData['SessionId'] || '';
+  const appYear = tokenData['X_App_Year'] || '';
+  const logoId = tokenData['X-LogoId'] || '';
+  const empCat = tokenData['X-EmpCat'] || '';
 
   const headers = {
     'Authorization': `Bearer ${erpAccessToken}`,
     'Accept': 'application/json',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    'OrganizationId': String(orgId),
-    'organization_id': String(orgId),
-    'OrgId': String(orgId),
-    'orgId': String(orgId),
+    // Exact headers expected by eCanvas get_CurrentOrganizationId() and ApiBaseController
+    'X-ContextId': String(contextId),
+    'ContextId': String(contextId),
+    'OrganizationId': String(contextId),
+    'organization_id': String(contextId),
+    'OrgId': String(contextId),
+    'orgId': String(contextId),
   };
+
+  if (userId) headers['X-UserId'] = String(userId);
+  if (rx) headers['X-RX'] = String(rx);
+  if (sessionId) headers['SessionId'] = String(sessionId);
+  if (appYear) headers['X_App_Year'] = String(appYear);
+  if (logoId) headers['X-LogoId'] = String(logoId);
+  if (empCat) headers['X-EmpCat'] = String(empCat);
+
+  // Clean undefined or empty values
+  Object.keys(headers).forEach((key) => {
+    if (!headers[key]) delete headers[key];
+  });
+
+  console.log('[ERP Auth] Sending /api/User headers:', headers);
 
   const response = await axios.get('https://erp.akgec.ac.in/api/User', {
     headers: headers,

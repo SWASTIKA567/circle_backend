@@ -209,7 +209,7 @@ const login = async (req, res) => {
       if (erpAccessToken) {
         console.log(`[ERP Auth] Token obtained! Keys:`, Object.keys(tokenResponse));
         erpData = await fetchErpUserData(erpAccessToken, tokenResponse);
-        console.log(`[ERP Auth] User data received for: ${erpData?.firstName || identifier}`);
+        console.log(`[ERP Auth] Raw /api/User Response:`, JSON.stringify(erpData));
         erpSuccess = true;
       }
     } catch (erpError) {
@@ -219,63 +219,91 @@ const login = async (req, res) => {
 
     // 2. If ERP succeeded, sync/create user in MongoDB with all ERP details
     if (erpSuccess && erpData) {
-      const studentNoFromErp = (erpData.admissionNo || identifier).trim().toUpperCase();
-      const userEmail = (erpData.email || `${studentNoFromErp.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
-      const fullName = `${erpData.firstName || ''} ${erpData.lastName || ''}`.trim() || identifier;
+      // Handle array or nested wrapper (e.g. [ { ... } ] or { data: { ... } } or { user: { ... } })
+      let profile = erpData;
+      if (Array.isArray(profile) && profile.length > 0) {
+        profile = profile[0];
+      } else if (profile.data && typeof profile.data === 'object') {
+        profile = Array.isArray(profile.data) ? profile.data[0] : profile.data;
+      } else if (profile.user && typeof profile.user === 'object') {
+        profile = profile.user;
+      }
+
+      console.log(`[ERP Auth Normalized Profile]:`, profile);
+
+      const fName = profile.firstName || profile.FirstName || profile.first_name || '';
+      const lName = profile.lastName || profile.LastName || profile.last_name || '';
+      const admNo = (profile.admissionNo || profile.AdmissionNo || profile.studentNo || profile.StudentNo || identifier).trim().toUpperCase();
+      const uEmail = (profile.email || profile.Email || `${admNo.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
+      const fNameFull = `${fName} ${lName}`.trim() || profile.name || profile.Name || identifier;
+      const cCourse = profile.course || profile.Course || '';
+      const bBranch = profile.branch || profile.Branch || '';
+      const rawSem = profile.semester || profile.Semester || '';
+      const sSemester = rawSem ? `Semester ${rawSem}`.replace('Semester Semester', 'Semester') : 'Semester 1';
+      const mMobile = profile.mobileNo || profile.MobileNo || profile.mobile || profile.Mobile || '';
+      const dDob = profile.dob || profile.DOB || profile.dateOfBirth || '';
+      const bBlood = profile.bloodGroup || profile.BloodGroup || '';
+      const fFather = profile.fatherName || profile.FatherName || '';
+      const mMother = profile.motherName || profile.MotherName || '';
+      const jJee = profile.jeeRank ?? profile.JeeRank ?? null;
+      const hHigh = profile.highSchoolPercentage || profile.HighSchoolPercentage || '';
+      const iInter = profile.intermediatePercentage || profile.IntermediatePercentage || '';
+      const bBank = profile.bankName || profile.BankName || '';
+      const iIfsc = profile.ifscCode || profile.IfscCode || '';
+      const aAddr = profile.address || profile.Address || '';
 
       let user = await User.findOne({
         $or: [
-          { studentNo: studentNoFromErp },
-          { email: userEmail },
+          { studentNo: admNo },
+          { email: uEmail },
         ],
       });
 
       if (!user) {
         // Create new user automatically from ERP data
         user = await User.create({
-          name: fullName,
-          firstName: erpData.firstName || '',
-          lastName: erpData.lastName || '',
-          studentNo: studentNoFromErp,
-          admissionNo: erpData.admissionNo || studentNoFromErp,
-          email: userEmail,
-          course: erpData.course || '',
-          branch: erpData.branch || '',
-          semester: erpData.semester ? `Semester ${erpData.semester}`.replace('Semester Semester', 'Semester') : 'Semester 1',
-          mobileNo: erpData.mobileNo || '',
-          dob: erpData.dob || '',
-          bloodGroup: erpData.bloodGroup || '',
-          fatherName: erpData.fatherName || '',
-          motherName: erpData.motherName || '',
-          jeeRank: erpData.jeeRank ?? null,
-          highSchoolPercentage: erpData.highSchoolPercentage || '',
-          intermediatePercentage: erpData.intermediatePercentage || '',
-          bankName: erpData.bankName || '',
-          ifscCode: erpData.ifscCode || '',
-          address: erpData.address || '',
-          password: password, // Save so user can also authenticate if ERP is temporarily down
+          name: fNameFull,
+          firstName: fName,
+          lastName: lName,
+          studentNo: admNo,
+          admissionNo: admNo,
+          email: uEmail,
+          course: cCourse,
+          branch: bBranch,
+          semester: sSemester,
+          mobileNo: mMobile,
+          dob: dDob,
+          bloodGroup: bBlood,
+          fatherName: fFather,
+          motherName: mMother,
+          jeeRank: jJee,
+          highSchoolPercentage: hHigh,
+          intermediatePercentage: iInter,
+          bankName: bBank,
+          ifscCode: iIfsc,
+          address: aAddr,
+          password: password,
         });
       } else {
         // Update user record with latest ERP details
-        user.name = fullName;
-        user.firstName = erpData.firstName || user.firstName;
-        user.lastName = erpData.lastName || user.lastName;
-        user.course = erpData.course || user.course;
-        user.branch = erpData.branch || user.branch;
-        if (erpData.semester) {
-          user.semester = `Semester ${erpData.semester}`.replace('Semester Semester', 'Semester');
-        }
-        user.mobileNo = erpData.mobileNo || user.mobileNo;
-        user.dob = erpData.dob || user.dob;
-        user.bloodGroup = erpData.bloodGroup || user.bloodGroup;
-        user.fatherName = erpData.fatherName || user.fatherName;
-        user.motherName = erpData.motherName || user.motherName;
-        user.jeeRank = erpData.jeeRank ?? user.jeeRank;
-        user.highSchoolPercentage = erpData.highSchoolPercentage || user.highSchoolPercentage;
-        user.intermediatePercentage = erpData.intermediatePercentage || user.intermediatePercentage;
-        user.bankName = erpData.bankName || user.bankName;
-        user.ifscCode = erpData.ifscCode || user.ifscCode;
-        user.address = erpData.address || user.address;
+        user.name = fNameFull;
+        if (fName) user.firstName = fName;
+        if (lName) user.lastName = lName;
+        if (admNo) user.admissionNo = admNo;
+        if (cCourse) user.course = cCourse;
+        if (bBranch) user.branch = bBranch;
+        if (sSemester) user.semester = sSemester;
+        if (mMobile) user.mobileNo = mMobile;
+        if (dDob) user.dob = dDob;
+        if (bBlood) user.bloodGroup = bBlood;
+        if (fFather) user.fatherName = fFather;
+        if (mMother) user.motherName = mMother;
+        if (jJee != null) user.jeeRank = jJee;
+        if (hHigh) user.highSchoolPercentage = hHigh;
+        if (iInter) user.intermediatePercentage = iInter;
+        if (bBank) user.bankName = bBank;
+        if (iIfsc) user.ifscCode = iIfsc;
+        if (aAddr) user.address = aAddr;
         user.password = password;
         await user.save();
       }

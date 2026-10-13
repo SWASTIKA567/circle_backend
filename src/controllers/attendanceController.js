@@ -302,3 +302,109 @@ exports.getStudentAttendance = async (req, res) => {
     });
   }
 };
+
+// @desc    Link ERP credentials for an existing session and fetch attendance immediately
+// @route   POST /api/attendance/link
+// @access  Protected
+exports.linkErpCredentials = async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter your AKGEC ERP password.',
+      });
+    }
+
+    const user = await User.findById(req.user._id).select('+erpPassword +erpToken +password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    const username = user.studentNo || user.admissionNo || user.email;
+    console.log(`[Attendance Link] Authenticating with ERP for ${username}...`);
+
+    let tokenRes;
+    try {
+      tokenRes = await fetchErpToken(username, password);
+    } catch (err) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid AKGEC ERP password. Please check your credentials.',
+      });
+    }
+
+    const erpAccessToken = tokenRes.access_token || tokenRes.token;
+    if (!erpAccessToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Failed to obtain access token from ERP.',
+      });
+    }
+
+    // Auto-discover erpUserId
+    let erpUserId = user.erpUserId;
+    if (!erpUserId) {
+      try {
+        const userRes = await axios.get('https://erp.akgec.ac.in/api/User', {
+          headers: {
+            'Authorization': `Bearer ${erpAccessToken}`,
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          },
+          timeout: 20000,
+        });
+        let list = userRes.data;
+        if (list && list.data && Array.isArray(list.data)) list = list.data;
+        if (!Array.isArray(list)) list = [list];
+        const cleanId = (user.studentNo || user.admissionNo || '').trim().toLowerCase();
+        const matched = list.find((item) => item && (
+          String(item.admissionNumber || item.admissionNo || '').toLowerCase() === cleanId ||
+          String(item.rollNumber || item.rollNo || '').toLowerCase() === cleanId ||
+          String(item.userId || '') === cleanId
+        )) || list[0];
+        if (matched && (matched.userId || matched.id)) {
+          erpUserId = String(matched.userId || matched.id).trim();
+        }
+      } catch (_) {}
+    }
+
+    // Save ERP credentials
+    user.erpPassword = encrypt(password);
+    user.password = password;
+    user.erpToken = erpAccessToken;
+    if (erpUserId) user.erpUserId = erpUserId;
+
+    // Fetch live attendance
+    let attendanceData = null;
+    if (erpUserId) {
+      try {
+        console.log(`[Attendance Link] Calling Attendance API for UID ${erpUserId}...`);
+        const raw = await callAttendanceApi(erpAccessToken, erpUserId);
+        attendanceData = processAttendanceData(raw);
+        user.cachedAttendance = attendanceData;
+        user.lastAttendanceSync = new Date();
+      } catch (attErr) {
+        console.warn('[Attendance Link] Live attendance call failed:', attErr.message);
+      }
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'AKGEC ERP linked successfully!',
+      attendance: attendanceData || user.cachedAttendance,
+    });
+  } catch (error) {
+    console.error('linkErpCredentials error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error while linking ERP credentials.',
+    });
+  }
+};
+
+module.exports.callAttendanceApi = callAttendanceApi;
+module.exports.processAttendanceData = processAttendanceData;
+

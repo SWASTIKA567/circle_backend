@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const User = require('../models/User');
 const { encrypt } = require('../utils/erpCrypto');
+const { callAttendanceApi, processAttendanceData } = require('./attendanceController');
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -451,9 +452,23 @@ const login = async (req, res) => {
         if (finalErpUserId) user.erpUserId = finalErpUserId;
         user.erpPassword = encrypt(password);
         if (erpAccessToken) user.erpToken = erpAccessToken;
-
-        await user.save();
       }
+
+      // PRE-FETCH ATTENDANCE IMMEDIATELY ON LOGIN SO IT SHOWS DIRECTLY
+      const syncUid = user.erpUserId || finalErpUserId;
+      if (syncUid && erpAccessToken) {
+        try {
+          console.log(`[ERP Auth] Pre-fetching live attendance for UID ${syncUid}...`);
+          const rawAtt = await callAttendanceApi(erpAccessToken, syncUid);
+          user.cachedAttendance = processAttendanceData(rawAtt);
+          user.lastAttendanceSync = new Date();
+          console.log('[ERP Auth] Live attendance successfully pre-fetched and saved!');
+        } catch (attErr) {
+          console.warn('[ERP Auth Warning] Pre-fetch attendance skipped:', attErr.message);
+        }
+      }
+
+      await user.save();
 
       const token = generateToken(user._id);
 
@@ -462,6 +477,7 @@ const login = async (req, res) => {
         message: 'AKGEC ERP verification successful! Logged in.',
         token,
         user: user.toCleanObject(),
+        attendance: user.cachedAttendance || null,
       });
     }
 

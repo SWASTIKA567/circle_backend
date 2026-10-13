@@ -68,23 +68,43 @@ exports.uploadNote = async (req, res) => {
     let fileUrl = '';
     let cloudinaryPublicId = null;
 
-    // Check if Cloudinary is configured
+    // Check if Cloudinary is configured with non-dummy values
     const hasCloudinary = Boolean(
       process.env.CLOUDINARY_CLOUD_NAME &&
       process.env.CLOUDINARY_API_KEY &&
-      process.env.CLOUDINARY_API_SECRET
+      process.env.CLOUDINARY_API_SECRET &&
+      process.env.CLOUDINARY_CLOUD_NAME !== 'your_cloud_name'
     );
 
     if (hasCloudinary && req.file.buffer) {
-      // Upload directly to Cloudinary
-      const uploadResult = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname);
-      fileUrl = uploadResult.secure_url || uploadResult.url;
-      cloudinaryPublicId = uploadResult.public_id;
-    } else if (req.file.path) {
-      // Fallback for disk storage if used
-      fileUrl = `/uploads/notes/${req.file.filename}`;
-    } else {
-      throw new Error('File storage configuration error. Missing buffer or file path.');
+      try {
+        // Upload directly to Cloudinary
+        const uploadResult = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname);
+        fileUrl = uploadResult.secure_url || uploadResult.url;
+        cloudinaryPublicId = uploadResult.public_id;
+      } catch (cloudErr) {
+        console.warn('Cloudinary upload failed (e.g. invalid cloud_name or credentials). Falling back to local disk storage:', cloudErr.message || cloudErr);
+      }
+    }
+
+    // Local disk storage fallback if Cloudinary not configured or failed
+    if (!fileUrl) {
+      const notesDir = path.join(__dirname, '../../uploads/notes');
+      if (!fs.existsSync(notesDir)) {
+        fs.mkdirSync(notesDir, { recursive: true });
+      }
+      const cleanName = (req.file.originalname || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeName = `${Date.now()}_${cleanName}`;
+      const filePath = path.join(notesDir, safeName);
+
+      if (req.file.buffer) {
+        fs.writeFileSync(filePath, req.file.buffer);
+      } else if (req.file.path && fs.existsSync(req.file.path)) {
+        fs.copyFileSync(req.file.path, filePath);
+      } else {
+        throw new Error('File storage configuration error. Missing buffer or file path.');
+      }
+      fileUrl = `/uploads/notes/${safeName}`;
     }
 
     const formattedSize = formatBytes(req.file.size);
@@ -325,6 +345,16 @@ exports.downloadNote = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Note not found.',
+      });
+    }
+
+    // Unapproved / pending notes cannot be downloaded by general public
+    const isApproved = note.isApproved || note.status === 'approved';
+    const isAdmin = req.user && (req.user.isAdmin || req.user.role === 'admin');
+    if (!isApproved && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'This note is pending Admin approval and is not publicly accessible yet.',
       });
     }
 

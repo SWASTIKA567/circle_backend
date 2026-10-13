@@ -14,12 +14,31 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+// File filter for image files (JPG, PNG, WEBP, GIF, SVG)
+const imageFilter = (req, file, cb) => {
+  const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'];
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (allowed.includes(ext) || (file.mimetype && file.mimetype.startsWith('image/'))) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files (.png, .jpg, .jpeg, .webp) are allowed!'), false);
+  }
+};
+
 const upload = multer({
   storage: storage,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB maximum size
   },
   fileFilter: fileFilter,
+});
+
+upload.image = multer({
+  storage: storage,
+  limits: {
+    fileSize: 15 * 1024 * 1024, // 15MB maximum size
+  },
+  fileFilter: imageFilter,
 });
 
 module.exports = upload;

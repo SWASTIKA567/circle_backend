@@ -2,12 +2,14 @@ const express = require('express');
 const router = express.Router();
 const {
   createSociety,
+  uploadSocietyLogo,
   getAllSocieties,
   getSocietyById,
   verifySocietyPassword,
   updateSociety,
 } = require('../controllers/societyController');
 const { protect } = require('../middleware/authMiddleware');
+const upload = require('../middleware/uploadMiddleware');
 
 // @route   GET /api/societies
 // @desc    Get all societies (Public for all users)
@@ -17,8 +19,12 @@ router.get('/', getAllSocieties);
 // @desc    Get single society details (Public for all users)
 router.get('/:id', getSocietyById);
 
+// @route   POST /api/societies/upload-logo
+// @desc    Upload logo image for society
+router.post('/upload-logo', protect, upload.image.single('logo'), uploadSocietyLogo);
+
 // @route   POST /api/societies
-// @desc    Create a new society (Only for verified society members)
+// @desc    Create a new society (Submitted for Admin approval)
 router.post('/', protect, createSociety);
 
 // @route   POST /api/societies/:id/verify-password

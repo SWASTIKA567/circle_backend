@@ -10,9 +10,8 @@ const upload = require('../middleware/uploadMiddleware');
 router.get('/', getAllNotes);
 
 // @route   GET /api/notes/download/:id
-// @desc    Download note PDF attachment directly
-// Accessible by EVERYONE using the app
-router.get('/download/:id', downloadNote);
+// @desc    Download note PDF attachment directly (Only approved notes for public, pending for admin)
+router.get('/download/:id', optionalProtect, downloadNote);
 
 // @route   POST /api/notes/upload
 // @desc    Upload note with PDF file (any user can upload)

@@ -1,15 +1,100 @@
+const fs = require('fs');
+const path = require('path');
 const Society = require('../models/Society');
+const cloudinary = require('../config/cloudinary');
+
+// Helper to upload image buffer to Cloudinary
+const uploadBufferToCloudinaryImage = (fileBuffer, originalName) => {
+  return new Promise((resolve, reject) => {
+    const cleanName = (originalName || 'logo').replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: 'image',
+        folder: 'circle_societies/logos',
+        public_id: `${Date.now()}_${cleanName}`,
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+    uploadStream.end(fileBuffer);
+  });
+};
+
+// @desc    Upload society logo image
+// @route   POST /api/societies/upload-logo
+// @access  Protected
+exports.uploadSocietyLogo = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an image file for the society logo.',
+      });
+    }
+
+    let logoUrl = '';
+    const hasCloudinary = Boolean(
+      process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET &&
+      process.env.CLOUDINARY_CLOUD_NAME !== 'your_cloud_name'
+    );
+
+    if (hasCloudinary && req.file.buffer) {
+      try {
+        const uploadResult = await uploadBufferToCloudinaryImage(req.file.buffer, req.file.originalname);
+        logoUrl = uploadResult.secure_url || uploadResult.url;
+      } catch (cloudErr) {
+        console.warn('Cloudinary logo upload failed (e.g. invalid cloud_name), falling back to local storage:', cloudErr.message || cloudErr);
+      }
+    }
+
+    if (!logoUrl) {
+      const logosDir = path.join(__dirname, '../../uploads/logos');
+      if (!fs.existsSync(logosDir)) {
+        fs.mkdirSync(logosDir, { recursive: true });
+      }
+      const ext = path.extname(req.file.originalname) || '.png';
+      const cleanName = path.basename(req.file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeName = `${Date.now()}_${cleanName}${ext}`;
+      const filePath = path.join(logosDir, safeName);
+
+      if (req.file.buffer) {
+        fs.writeFileSync(filePath, req.file.buffer);
+      } else if (req.file.path && fs.existsSync(req.file.path)) {
+        fs.copyFileSync(req.file.path, filePath);
+      } else {
+        throw new Error('Image storage configuration error. Missing buffer or file path.');
+      }
+      logoUrl = `/uploads/logos/${safeName}`;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Society logo uploaded successfully!',
+      logoUrl,
+    });
+  } catch (error) {
+    console.error('Error uploading society logo:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error while uploading logo.',
+    });
+  }
+};
 
 // @desc    Create a new society
 // @route   POST /api/societies
-// @access  Protected (Society Members Only)
+// @access  Protected
 exports.createSociety = async (req, res) => {
   try {
-    // 1. Role verification: user must be a society member
-    if (!req.user || !req.user.isSocietyMember) {
-      return res.status(403).json({
+    // 1. Role verification: user must be logged in
+    if (!req.user) {
+      return res.status(401).json({
         success: false,
-        message: 'Access denied. Only verified society members can create a society.',
+        message: 'Access denied. Please log in to create a society.',
       });
     }
 
@@ -79,6 +164,15 @@ exports.createSociety = async (req, res) => {
       createdBy: req.user._id,
       createdByName: req.user.name || 'Society Member',
     });
+
+    if (req.user && !req.user.isSocietyMember) {
+      try {
+        req.user.isSocietyMember = true;
+        await req.user.save();
+      } catch (saveErr) {
+        console.warn('Could not update user isSocietyMember flag:', saveErr.message);
+      }
+    }
 
     return res.status(201).json({
       success: true,

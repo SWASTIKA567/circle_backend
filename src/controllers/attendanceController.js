@@ -23,19 +23,16 @@ const fetchErpToken = async (username, password) => {
 
 // Helper: Call Attendance API on AKGEC ERP
 const callAttendanceApi = async (erpAccessToken, erpUserId) => {
+  if (!erpUserId) {
+    throw new Error('ERP user identifier is missing. Please sign in again to link your account.');
+  }
+
   const url = `https://erp.akgec.ac.in/api/SubjectAttendance/GetPresentAbsentStudent?isDateWise=false&termId=0&userId=${erpUserId}&y=0`;
   
   const headers = {
     'Authorization': `Bearer ${erpAccessToken}`,
     'Accept': 'application/json, text/plain, */*',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    'X-ContextId': '1',
-    'ContextId': '1',
-    'OrganizationId': '1',
-    'organization_id': '1',
-    'OrgId': '1',
-    'orgId': '1',
-    'X-UserId': String(erpUserId),
   };
 
   const response = await axios.get(url, { headers, timeout: 25000 });
@@ -180,21 +177,60 @@ exports.getStudentAttendance = async (req, res) => {
       });
     }
 
-    const erpUserId = user.erpUserId;
+    let erpUserId = user.erpUserId;
     const rawErpPassword = decrypt(user.erpPassword);
 
-    // If user has no ERP credentials
+    // If user has no ERP credentials saved
     if (!erpUserId && !rawErpPassword) {
       return res.status(400).json({
         success: false,
         isErpLinked: false,
-        message: 'AKGEC ERP credentials not linked. Please log in using your student number and password.',
+        message: 'AKGEC ERP credentials not linked. Please sign out and sign in again with your student number and password to link live attendance.',
       });
     }
 
     let erpAccessToken = user.erpToken;
     let attendanceData = null;
     let fetchError = null;
+
+    // Auto-discover erpUserId from /api/User if missing but password is saved
+    if (!erpUserId && rawErpPassword) {
+      try {
+        const username = user.studentNo || user.admissionNo || user.email;
+        console.log(`[Attendance API] Attempting erpUserId discovery for ${username}...`);
+        const tokenRes = await fetchErpToken(username, rawErpPassword);
+        const token = tokenRes.access_token || tokenRes.token;
+        if (token) {
+          erpAccessToken = token;
+          const userRes = await axios.get('https://erp.akgec.ac.in/api/User', {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Accept': 'application/json, text/plain, */*',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            },
+            timeout: 20000,
+          });
+          let list = userRes.data;
+          if (list && list.data && Array.isArray(list.data)) list = list.data;
+          if (!Array.isArray(list)) list = [list];
+          const cleanId = (user.studentNo || user.admissionNo || '').trim().toLowerCase();
+          const matched = list.find((item) => item && (
+            String(item.admissionNumber || item.admissionNo || '').toLowerCase() === cleanId ||
+            String(item.rollNumber || item.rollNo || '').toLowerCase() === cleanId ||
+            String(item.userId || '') === cleanId
+          )) || list[0];
+          if (matched && (matched.userId || matched.id)) {
+            erpUserId = String(matched.userId || matched.id).trim();
+            user.erpUserId = erpUserId;
+            user.erpToken = token;
+            await user.save();
+            console.log(`[Attendance API] Discovered erpUserId: ${erpUserId}`);
+          }
+        }
+      } catch (discErr) {
+        console.warn('[Attendance API] erpUserId auto-discovery error:', discErr.message);
+      }
+    }
 
     // 1. Try using existing cached ERP access token
     if (erpAccessToken && erpUserId) {
@@ -209,21 +245,19 @@ exports.getStudentAttendance = async (req, res) => {
     }
 
     // 2. If token expired or was missing, renew via /Token
-    if (!attendanceData && rawErpPassword) {
+    if (!attendanceData && rawErpPassword && erpUserId) {
       try {
         const username = user.studentNo || user.admissionNo || user.email;
         console.log(`[Attendance API] Renewing ERP token for ${username}...`);
         const tokenRes = await fetchErpToken(username, rawErpPassword);
         erpAccessToken = tokenRes.access_token || tokenRes.token;
 
-        const updatedUid = String(tokenRes['X-UserId'] || tokenRes.userId || erpUserId || '').trim();
         if (erpAccessToken) {
           user.erpToken = erpAccessToken;
-          if (updatedUid) user.erpUserId = updatedUid;
           await user.save();
 
-          console.log(`[Attendance API] Fetching attendance with new token for UID ${updatedUid}...`);
-          const raw = await callAttendanceApi(erpAccessToken, updatedUid || erpUserId);
+          console.log(`[Attendance API] Fetching attendance with new token for UID ${erpUserId}...`);
+          const raw = await callAttendanceApi(erpAccessToken, erpUserId);
           attendanceData = processAttendanceData(raw);
         }
       } catch (renewErr) {

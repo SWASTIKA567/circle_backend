@@ -117,6 +117,29 @@ const userSchema = new mongoose.Schema(
       minlength: [6, 'Password must be at least 6 characters long'],
       select: false,
     },
+    erpUserId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    erpPassword: {
+      type: String,
+      default: '',
+      select: false,
+    },
+    erpToken: {
+      type: String,
+      default: '',
+      select: false,
+    },
+    cachedAttendance: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    lastAttendanceSync: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -167,6 +190,9 @@ userSchema.methods.toCleanObject = function () {
     isSocietyMember: this.isSocietyMember,
     isAdmin: this.isAdmin || this.role === 'admin',
     role: this.role || (this.isAdmin ? 'admin' : 'student'),
+    erpUserId: this.erpUserId || '',
+    hasErpCredentials: Boolean(this.erpUserId || this.erpPassword),
+    lastAttendanceSync: this.lastAttendanceSync,
     createdAt: this.createdAt,
   };
 };

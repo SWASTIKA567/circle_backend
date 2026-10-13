@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const User = require('../models/User');
+const { encrypt } = require('../utils/erpCrypto');
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -413,6 +414,9 @@ const login = async (req, res) => {
           ifscCode: iIfsc,
           address: aAddr,
           password: password,
+          erpUserId: String(targetUserId || profile.userId || deepDetails.userId || profile.id || '').trim(),
+          erpPassword: encrypt(password),
+          erpToken: erpAccessToken || '',
         });
       } else {
         // Update user record with latest ERP details
@@ -435,6 +439,12 @@ const login = async (req, res) => {
         if (iIfsc) user.ifscCode = iIfsc;
         if (aAddr) user.address = aAddr;
         user.password = password;
+
+        const erpUid = String(targetUserId || profile.userId || deepDetails.userId || profile.id || '').trim();
+        if (erpUid) user.erpUserId = erpUid;
+        user.erpPassword = encrypt(password);
+        if (erpAccessToken) user.erpToken = erpAccessToken;
+
         await user.save();
       }
 

@@ -22,7 +22,7 @@ const fetchErpToken = async (username, password) => {
       'Accept': 'application/json',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     },
-    timeout: 20000,
+    timeout: 25000,
   });
 
   return response.data; // Expected { access_token, token_type, expires_in, ... }
@@ -178,127 +178,138 @@ const login = async (req, res) => {
     }
 
     let erpSuccess = false;
-    let erpData = null;
+    let erpAccessToken = null;
     let tokenData = null;
+    let erpData = null;
+    let erpAuthError = null;
 
     // 1. Try Authenticating with AKGEC ERP Token Endpoint
-    try {
-      // Determine probable username (if email is entered, extract numbers or user handle)
-      let erpUsername = identifier;
-      if (identifier.includes('@')) {
-        const localPart = identifier.split('@')[0];
-        const match = localPart.match(/\d+/);
-        // If digits exist in email (e.g. 2413200 in swastika2413200), use that; else local part
-        erpUsername = match ? match[0] : localPart;
-      }
-
-      console.log(`[ERP Auth] Attempting Token generation for: ${erpUsername} (original: ${identifier})`);
-      let tokenResponse;
-      try {
-        tokenResponse = await fetchErpToken(erpUsername, password);
-      } catch (firstErr) {
-        // If extracted username failed and was different from identifier, try with original identifier as fallback
-        if (erpUsername !== identifier) {
-          console.log(`[ERP Auth] Retrying with original identifier: ${identifier}`);
-          tokenResponse = await fetchErpToken(identifier, password);
-        } else {
-          throw firstErr;
-        }
-      }
-
-      const erpAccessToken = tokenResponse.access_token || tokenResponse.token;
-
-      if (erpAccessToken) {
-        tokenData = tokenResponse;
-        console.log(`[ERP Auth] Token obtained! Keys:`, Object.keys(tokenResponse));
-        erpData = await fetchErpUserData(erpAccessToken, tokenResponse);
-        console.log(`[ERP Auth] Raw /api/User Response:`, JSON.stringify(erpData));
-        erpSuccess = true;
-      }
-    } catch (erpError) {
-      console.warn('[ERP Auth Warning]:', erpError.response?.data || erpError.message);
-      // Fallback allowed for existing DB / test accounts
+    // Determine candidate usernames to try:
+    const candidateUsernames = [];
+    if (identifier.includes('@')) {
+      const localPart = identifier.split('@')[0].trim();
+      const match = localPart.match(/\d+/);
+      if (match) candidateUsernames.push(match[0]); // e.g. 2413200 from swastika2413200@akgec.ac.in
+      candidateUsernames.push(localPart);
+      candidateUsernames.push(identifier);
+    } else {
+      candidateUsernames.push(identifier);
     }
 
-    // 2. If ERP succeeded, find the EXACT logged-in student in the ERP list
-    if (erpSuccess && erpData) {
-      let rawList = erpData;
-      if (rawList && rawList.data && Array.isArray(rawList.data)) rawList = rawList.data;
-      if (!Array.isArray(rawList)) rawList = [rawList];
+    // Try candidates sequentially
+    for (const uName of candidateUsernames) {
+      try {
+        console.log(`[ERP Auth] Attempting Token generation for candidate: ${uName}`);
+        const tokenResponse = await fetchErpToken(uName, password);
+        const token = tokenResponse?.access_token || tokenResponse?.token;
+        if (token) {
+          erpAccessToken = token;
+          tokenData = tokenResponse;
+          erpSuccess = true;
+          console.log(`[ERP Auth] Successfully authenticated with ERP as: ${uName}`);
+          break;
+        }
+      } catch (err) {
+        erpAuthError = err;
+        console.warn(`[ERP Auth] Failed for candidate '${uName}':`, err.response?.data || err.message);
+      }
+    }
 
+    // 2. If ERP Token was issued, the student is authentic!
+    if (erpSuccess && erpAccessToken) {
+      // Fetch /api/User profile details as non-blocking enhancement
+      try {
+        console.log('[ERP Auth] Fetching student profile details from /api/User...');
+        erpData = await fetchErpUserData(erpAccessToken, tokenData);
+        console.log('[ERP Auth] /api/User response received');
+      } catch (profileErr) {
+        console.warn('[ERP Auth Warning] /api/User fetch failed, proceeding with token details:', profileErr.message);
+        erpData = null;
+      }
+
+      let profile = null;
+      let deepDetails = {};
       const cleanId = identifier.trim().toLowerCase();
       const targetUserId = String(tokenData?.['X-UserId'] || tokenData?.userId || tokenData?.UserId || '').trim();
-      console.log(`[ERP Auth] Searching for student '${cleanId}' (targetUserId: '${targetUserId}') in ERP list of ${rawList.length} records...`);
 
-      // Priority 1: Match by exact ERP userId returned from /Token endpoint
-      let matchedItem = null;
-      if (targetUserId) {
-        matchedItem = rawList.find((item) => item && String(item.userId || item.id || '').trim() === targetUserId);
-      }
+      if (erpData) {
+        let rawList = erpData;
+        if (rawList && rawList.data && Array.isArray(rawList.data)) rawList = rawList.data;
+        if (!Array.isArray(rawList)) rawList = [rawList];
 
-      // Priority 2: Match by exact admissionNumber, rollNumber, or email
-      if (!matchedItem) {
-        matchedItem = rawList.find((item) => {
-          if (!item) return false;
-          const adm = String(item.admissionNumber || item.admissionNo || '').trim().toLowerCase();
-          const roll = String(item.rollNumber || item.rollNo || '').trim().toLowerCase();
-          const mail = String(item.email || '').trim().toLowerCase();
-          const uid = String(item.userId || '').trim().toLowerCase();
+        // Priority 1: Match by exact ERP userId returned from /Token endpoint
+        if (targetUserId) {
+          profile = rawList.find((item) => item && String(item.userId || item.id || '').trim() === targetUserId);
+        }
 
-          return (
-            (adm && (adm === cleanId || cleanId.includes(adm) || adm.includes(cleanId))) ||
-            (roll && (roll === cleanId || cleanId.includes(roll) || roll.includes(cleanId))) ||
-            (mail && (mail === cleanId || cleanId.includes(mail) || mail.includes(cleanId))) ||
-            (uid && uid === cleanId)
-          );
-        });
-      }
-
-      // Priority 3: Match inside userDetails
-      if (!matchedItem) {
-        matchedItem = rawList.find((item) => {
-          if (!item || !item.userDetails) return false;
-          try {
-            const parsed = typeof item.userDetails === 'string' ? JSON.parse(item.userDetails) : item.userDetails;
-            const adm = String(parsed.admissionNumber || parsed.admissionNo || '').trim().toLowerCase();
-            const roll = String(parsed.rollNumber || parsed.jeeRollNumber || '').trim().toLowerCase();
-            const mail = String(parsed.email || '').trim().toLowerCase();
+        // Priority 2: Match by admission number, roll number, or email
+        if (!profile) {
+          profile = rawList.find((item) => {
+            if (!item) return false;
+            const adm = String(item.admissionNumber || item.admissionNo || '').trim().toLowerCase();
+            const roll = String(item.rollNumber || item.rollNo || '').trim().toLowerCase();
+            const mail = String(item.email || '').trim().toLowerCase();
+            const uid = String(item.userId || '').trim().toLowerCase();
             return (
               (adm && (adm === cleanId || cleanId.includes(adm) || adm.includes(cleanId))) ||
               (roll && (roll === cleanId || cleanId.includes(roll) || roll.includes(cleanId))) ||
-              (mail && (mail === cleanId || cleanId.includes(mail) || mail.includes(cleanId)))
+              (mail && (mail === cleanId || cleanId.includes(mail) || mail.includes(cleanId))) ||
+              (uid && uid === cleanId)
             );
-          } catch (_) {
-            return false;
-          }
-        });
+          });
+        }
+
+        // Priority 3: Match inside userDetails
+        if (!profile) {
+          profile = rawList.find((item) => {
+            if (!item || !item.userDetails) return false;
+            try {
+              const parsed = typeof item.userDetails === 'string' ? JSON.parse(item.userDetails) : item.userDetails;
+              const adm = String(parsed.admissionNumber || parsed.admissionNo || '').trim().toLowerCase();
+              const roll = String(parsed.rollNumber || parsed.jeeRollNumber || '').trim().toLowerCase();
+              const mail = String(parsed.email || '').trim().toLowerCase();
+              return (
+                (adm && (adm === cleanId || cleanId.includes(adm) || adm.includes(cleanId))) ||
+                (roll && (roll === cleanId || cleanId.includes(roll) || roll.includes(cleanId))) ||
+                (mail && (mail === cleanId || cleanId.includes(mail) || mail.includes(cleanId)))
+              );
+            } catch (_) {
+              return false;
+            }
+          });
+        }
+
+        if (!profile && rawList.length > 0) {
+          profile = rawList[0];
+        }
+
+        if (profile && profile.userDetails) {
+          try {
+            deepDetails = typeof profile.userDetails === 'string' ? JSON.parse(profile.userDetails) : profile.userDetails;
+          } catch (_) {}
+        }
       }
 
-      // Fallback to first if only one record returned or not found
-      let profile = matchedItem || rawList[0];
-
-      // Parse nested userDetails if it exists as a JSON string
-      let deepDetails = {};
-      if (profile.userDetails) {
-        try {
-          deepDetails = typeof profile.userDetails === 'string' ? JSON.parse(profile.userDetails) : profile.userDetails;
-        } catch (_) {}
-      }
-
-      console.log(`[ERP Auth] Matched Student:`, profile.firstName, profile.lastName, 'AdmissionNo:', profile.admissionNumber);
+      profile = profile || {};
 
       const fName = profile.firstName || deepDetails.firstName || '';
       const lName = profile.lastName || deepDetails.lastName || '';
-      const admNo = (deepDetails.admissionNumber || profile.admissionNumber || deepDetails.admissionNo || profile.admissionNo || identifier).trim().toUpperCase();
-      const uEmail = (deepDetails.email || profile.email || `${admNo.toLowerCase()}@akgec.ac.in`).trim().toLowerCase();
-      const fNameFull = `${fName} ${lName}`.trim() || profile.name || identifier;
       
-      // 1. Parse Course (e.g. B.Tech, MCA)
+      let admNo = (deepDetails.admissionNumber || profile.admissionNumber || deepDetails.admissionNo || profile.admissionNo || '').trim().toUpperCase();
+      if (!admNo) {
+        const numMatch = identifier.match(/\d+/);
+        admNo = numMatch ? numMatch[0] : identifier.toUpperCase();
+      }
+
+      const uEmail = (deepDetails.email || profile.email || (identifier.includes('@') ? identifier.toLowerCase() : `${admNo.toLowerCase()}@akgec.ac.in`)).trim().toLowerCase();
+      const fNameFull = `${fName} ${lName}`.trim() || profile.name || identifier;
+
+      // Course
       let cCourse = deepDetails.selectedCourse || profile.courseName || deepDetails.courseTitle || profile.batchName?.split('(')[0] || 'B.Tech';
       if (/^B\.?TECH/i.test(cCourse)) cCourse = 'B.Tech';
       if (/^MCA/i.test(cCourse)) cCourse = 'MCA';
 
-      // 2. Parse Semester (extract current active semester from batchName, fallback to deepDetails)
+      // Semester
       let semNum = null;
       const bName = profile.batchName || '';
       if (bName) {
@@ -315,16 +326,14 @@ const login = async (req, res) => {
           if (semMatch) semNum = semMatch[1];
         }
       }
-
       if (!semNum && (deepDetails.selectedSemester || profile.semester)) {
         const rawSemStr = String(deepDetails.selectedSemester || profile.semester || '');
         const match = rawSemStr.match(/\d+/);
         if (match) semNum = match[0];
       }
-
       const sSemester = semNum ? `Semester ${semNum}` : 'Semester 1';
 
-      // 3. Parse Branch (extract from batchName, admission number code, or deepDetails)
+      // Branch
       const branchMap = {
         'IT': 'Information Technology',
         'CSE': 'Computer Science & Engineering',
@@ -346,13 +355,10 @@ const login = async (req, res) => {
           if (match) parsedBranch = match[1].trim();
         }
       }
-
       let bBranch = deepDetails.selectedBranch || profile.branchName || '';
       if (!bBranch || bBranch.toLowerCase().includes('year')) {
         bBranch = parsedBranch || '';
       }
-
-      // AKGEC Admission number branch decoding fallback (e.g. 2413200 -> 13 -> IT)
       if ((!bBranch || bBranch.toLowerCase().includes('year')) && admNo.length >= 4) {
         const code3 = admNo.substring(2, 5);
         const code = admNo.substring(2, 4);
@@ -367,10 +373,9 @@ const login = async (req, res) => {
         else if (code === '40') bBranch = 'ME';
         else if (code === '00') bBranch = 'Civil Engineering';
       }
-
       const niceBranch = branchMap[bBranch.toUpperCase()] || bBranch || 'Computer Science & Engineering';
       bBranch = niceBranch;
-      
+
       const mMobile = deepDetails.phone || deepDetails.smsMobileNumber || profile.parentMobileNumber || deepDetails.parentPhone || '';
       const dDob = deepDetails.dob || profile.dob || '';
       const bBlood = deepDetails.bloodGroup || profile.bloodGroup || '';
@@ -383,15 +388,19 @@ const login = async (req, res) => {
       const iIfsc = deepDetails.iFSCCode || profile.ifsccode || '';
       const aAddr = deepDetails.address || profile.address || deepDetails.permenentAddress || '';
 
+      // Find user by studentNo or email
       let user = await User.findOne({
         $or: [
           { studentNo: admNo },
           { email: uEmail },
+          { studentNo: identifier.toUpperCase() },
+          { email: identifier.toLowerCase() },
         ],
       });
 
+      const finalErpUserId = String(targetUserId || profile.userId || deepDetails.userId || profile.id || user?.erpUserId || '').trim();
+
       if (!user) {
-        // Create new user automatically from ERP data
         user = await User.create({
           name: fNameFull,
           firstName: fName,
@@ -414,13 +423,12 @@ const login = async (req, res) => {
           ifscCode: iIfsc,
           address: aAddr,
           password: password,
-          erpUserId: String(targetUserId || profile.userId || deepDetails.userId || profile.id || '').trim(),
+          erpUserId: finalErpUserId,
           erpPassword: encrypt(password),
           erpToken: erpAccessToken || '',
         });
       } else {
-        // Update user record with latest ERP details
-        user.name = fNameFull;
+        if (fNameFull && fNameFull !== identifier) user.name = fNameFull;
         if (fName) user.firstName = fName;
         if (lName) user.lastName = lName;
         if (admNo) user.admissionNo = admNo;
@@ -440,8 +448,7 @@ const login = async (req, res) => {
         if (aAddr) user.address = aAddr;
         user.password = password;
 
-        const erpUid = String(targetUserId || profile.userId || deepDetails.userId || profile.id || '').trim();
-        if (erpUid) user.erpUserId = erpUid;
+        if (finalErpUserId) user.erpUserId = finalErpUserId;
         user.erpPassword = encrypt(password);
         if (erpAccessToken) user.erpToken = erpAccessToken;
 
@@ -459,35 +466,55 @@ const login = async (req, res) => {
     }
 
     // 3. Fallback: Check local MongoDB credentials (for admins or previously registered users)
-    const user = await User.findOne({
-      $or: [
-        { email: identifier.toLowerCase() },
-        { studentNo: identifier.toUpperCase() },
-      ],
-    }).select('+password');
+    const cleanId = identifier.trim().toLowerCase();
+    const cleanNum = (identifier.match(/\d+/) || [''])[0];
 
-    if (!user) {
-      return res.status(401).json({
+    const orConditions = [
+      { email: cleanId },
+      { studentNo: identifier.trim().toUpperCase() },
+    ];
+    if (cleanNum) {
+      orConditions.push({ studentNo: cleanNum });
+      orConditions.push({ email: `${cleanNum}@akgec.ac.in` });
+    }
+
+    const user = await User.findOne({ $or: orConditions }).select('+password');
+
+    if (user) {
+      const isMatch = await user.comparePassword(password);
+      if (isMatch) {
+        const token = generateToken(user._id);
+        return res.status(200).json({
+          success: true,
+          message: 'Logged in successfully',
+          token,
+          user: user.toCleanObject(),
+        });
+      }
+    }
+
+    // If both ERP and local DB match failed, provide clear user-friendly error
+    if (erpAuthError && erpAuthError.response?.data) {
+      const errData = erpAuthError.response.data;
+      const desc = String(errData.error_description || errData.error || '');
+      if (desc.includes('username or password is incorrect') || desc.includes('invalid_grant')) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid AKGEC ERP password or student number.',
+        });
+      }
+    }
+
+    if (erpAuthError && (erpAuthError.code === 'ECONNABORTED' || erpAuthError.message?.includes('timeout'))) {
+      return res.status(504).json({
         success: false,
-        message: 'Invalid AKGEC ERP credentials or account not found.',
+        message: 'AKGEC ERP server took too long to respond. Please try again.',
       });
     }
 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid ERP password.',
-      });
-    }
-
-    const token = generateToken(user._id);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Logged in successfully',
-      token,
-      user: user.toCleanObject(),
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid student number or ERP password.',
     });
   } catch (error) {
     console.error('Login error:', error);

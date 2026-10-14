@@ -40,8 +40,21 @@ const callAttendanceApi = async (erpAccessToken, erpUserId, tokenData = {}) => {
     'X-UserId': String(erpUserId),
   };
 
+  // 1. Try modern AKGEC ERP StudentDashboard API (Primary and exact live attendance with real subject stats)
+  try {
+    const dashUrl = `https://erp.akgec.ac.in/api/StudentDashboard?userId=${erpUserId}`;
+    console.log(`[callAttendanceApi] Fetching live student dashboard attendance from ${dashUrl}...`);
+    const dashRes = await axios.get(dashUrl, { headers, timeout: 25000 });
+    if (dashRes.data && dashRes.data.data && dashRes.data.data.attendanceSummary) {
+      console.log('[callAttendanceApi] Live StudentDashboard attendance loaded successfully!');
+      return { dashboardAttendance: dashRes.data.data };
+    }
+  } catch (dashErr) {
+    console.warn('[callAttendanceApi] StudentDashboard fetch failed, trying fallback:', dashErr.message);
+  }
+
   let rawData = null;
-  // 1. Try detailed attendance API
+  // 2. Try detailed attendance API
   try {
     const url = `https://erp.akgec.ac.in/api/SubjectAttendance/GetPresentAbsentStudent?isDateWise=false&termId=0&userId=${erpUserId}&y=0`;
     const response = await axios.get(url, { headers, timeout: 25000 });
@@ -50,7 +63,7 @@ const callAttendanceApi = async (erpAccessToken, erpUserId, tokenData = {}) => {
     console.warn('[callAttendanceApi] GetPresentAbsentStudent failed:', err.response?.status || err.message);
   }
 
-  // 2. Fetch the batch information (gives semester and batch name)
+  // 3. Fetch the batch information (gives semester and batch name)
   let batches = [];
   try {
     const batchRes = await axios.get(`https://erp.akgec.ac.in/api/SubjectAttendance?userId=${erpUserId}`, { headers, timeout: 20000 });
@@ -61,7 +74,7 @@ const callAttendanceApi = async (erpAccessToken, erpUserId, tokenData = {}) => {
     console.warn('[callAttendanceApi] SubjectAttendance batch fetch failed:', bErr.message);
   }
 
-  // 3. Fetch student user detail to get exact enrolled subjects (stuSubjectList)
+  // 4. Fetch student user detail to get exact enrolled subjects (stuSubjectList)
   let enrolledSubjects = [];
   try {
     const userDetailRes = await axios.get(`https://erp.akgec.ac.in/api/User?Id=${erpUserId}&val=0&val1=0&val2=0&val3=0`, { headers, timeout: 20000 });
@@ -77,6 +90,59 @@ const callAttendanceApi = async (erpAccessToken, erpUserId, tokenData = {}) => {
 
 // Process & normalize raw ERP attendance records
 const processAttendanceData = (rawInput) => {
+  // 1. Primary: Parse modern StudentDashboard attendanceSummary
+  if (rawInput && rawInput.dashboardAttendance && rawInput.dashboardAttendance.attendanceSummary) {
+    const summary = rawInput.dashboardAttendance.attendanceSummary;
+    const userObj = rawInput.dashboardAttendance.user;
+    const rawList = summary.subjectWise || [];
+
+    const subjects = rawList.map((item) => {
+      const code = String(item.subjectCode || '').trim();
+      const name = String(item.subjectName || code || 'Subject').trim();
+      const total = Number(item.totalLectures || 0);
+      const present = Number(item.presentLectures || 0);
+      const absent = Number(item.absentLectures || (total >= present ? total - present : 0));
+      const percentage = Number(item.percentage != null ? item.percentage : (total > 0 ? parseFloat(((present / total) * 100).toFixed(1)) : 0));
+
+      const safeBunk = Math.max(0, Math.floor((4 * present - 3 * total) / 3));
+      const requiredToAttend = Math.max(0, 3 * total - 4 * present);
+
+      return {
+        subjectCode: code,
+        subjectName: name,
+        facultyName: 'AKGEC Faculty',
+        totalClasses: total,
+        present,
+        absent,
+        percentage,
+        safeBunk,
+        requiredToAttend,
+        status: percentage >= 75 ? 'safe' : percentage >= 65 ? 'warning' : 'critical',
+      };
+    });
+
+    const overallPercentage = Number(summary.percentage != null ? summary.percentage : (summary.totalLectures > 0 ? parseFloat(((summary.presentLectures / summary.totalLectures) * 100).toFixed(1)) : 0));
+    const totalHeld = Number(summary.totalLectures || 0);
+    const totalPresent = Number(summary.presentLectures || 0);
+    const totalAbsent = Number(summary.absentLectures || 0);
+
+    const overallSafeBunk = Math.max(0, Math.floor((4 * totalPresent - 3 * totalHeld) / 3));
+    const overallRequiredToAttend = Math.max(0, 3 * totalHeld - 4 * totalPresent);
+
+    return {
+      overallPercentage,
+      totalHeld,
+      totalPresent,
+      totalAbsent,
+      overallSafeBunk,
+      overallRequiredToAttend,
+      status: overallPercentage >= 75 ? 'safe' : overallPercentage >= 65 ? 'warning' : 'critical',
+      subjects,
+      rollNumber: userObj?.rollNumber || '',
+      lastSync: new Date().toISOString(),
+    };
+  }
+
   let list = rawInput;
   let batches = [];
   let enrolledSubjects = [];

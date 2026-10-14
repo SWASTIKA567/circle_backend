@@ -61,17 +61,30 @@ const callAttendanceApi = async (erpAccessToken, erpUserId, tokenData = {}) => {
     console.warn('[callAttendanceApi] SubjectAttendance batch fetch failed:', bErr.message);
   }
 
-  return { rawData, batches };
+  // 3. Fetch student user detail to get exact enrolled subjects (stuSubjectList)
+  let enrolledSubjects = [];
+  try {
+    const userDetailRes = await axios.get(`https://erp.akgec.ac.in/api/User?Id=${erpUserId}&val=0&val1=0&val2=0&val3=0`, { headers, timeout: 20000 });
+    if (userDetailRes.data && Array.isArray(userDetailRes.data.stuSubjectList)) {
+      enrolledSubjects = userDetailRes.data.stuSubjectList;
+    }
+  } catch (uErr) {
+    console.warn('[callAttendanceApi] stuSubjectList fetch failed:', uErr.message);
+  }
+
+  return { rawData, batches, enrolledSubjects };
 };
 
 // Process & normalize raw ERP attendance records
 const processAttendanceData = (rawInput) => {
   let list = rawInput;
   let batches = [];
+  let enrolledSubjects = [];
 
   if (rawInput && typeof rawInput === 'object') {
-    if (rawInput.batches !== undefined) {
+    if (rawInput.batches !== undefined || rawInput.enrolledSubjects !== undefined) {
       batches = rawInput.batches || [];
+      enrolledSubjects = rawInput.enrolledSubjects || [];
       list = rawInput.rawData;
     }
   }
@@ -89,7 +102,7 @@ const processAttendanceData = (rawInput) => {
     }
   }
 
-  // If detailed subjects were returned, parse each subject
+  // 1. If detailed subjects were returned from GetPresentAbsentStudent, parse each subject
   if (list && list.length > 0) {
     let totalHeldSum = 0;
     let totalAttendedSum = 0;
@@ -197,7 +210,44 @@ const processAttendanceData = (rawInput) => {
     };
   }
 
-  // Graceful fallback for active semester batches when faculty hasn't updated lectures yet
+  // 2. If detailed lectures are not yet in GetPresentAbsentStudent, map the student's real enrolled subjects
+  if (enrolledSubjects && enrolledSubjects.length > 0) {
+    const subjects = enrolledSubjects.map((s) => {
+      const code = String(s.code || '').trim();
+      const name = String(s.name || '').trim();
+      const weekly = Number(s.maxWeeklyClass || 0);
+
+      return {
+        subjectCode: code,
+        subjectName: name,
+        facultyName: 'AKGEC Faculty',
+        totalClasses: weekly,
+        present: weekly,
+        absent: 0,
+        percentage: 100,
+        safeBunk: Math.max(0, Math.floor((4 * weekly - 3 * weekly) / 3)),
+        requiredToAttend: 0,
+        status: 'safe',
+      };
+    });
+
+    const totalHeldSum = subjects.reduce((acc, s) => acc + s.totalClasses, 0);
+    const totalPresentSum = subjects.reduce((acc, s) => acc + s.present, 0);
+
+    return {
+      overallPercentage: 100,
+      totalHeld: totalHeldSum,
+      totalPresent: totalPresentSum,
+      totalAbsent: 0,
+      overallSafeBunk: 0,
+      overallRequiredToAttend: 0,
+      status: 'safe',
+      subjects,
+      lastSync: new Date().toISOString(),
+    };
+  }
+
+  // 3. Last fallback for active semester batches
   const activeBatch = batches && batches.length > 0 ? batches[0] : null;
   const batchLabel = activeBatch?.batchName || 'AKGEC Semester Classes';
 

@@ -459,7 +459,7 @@ const login = async (req, res) => {
       if (syncUid && erpAccessToken) {
         try {
           console.log(`[ERP Auth] Pre-fetching live attendance for UID ${syncUid}...`);
-          const rawAtt = await callAttendanceApi(erpAccessToken, syncUid);
+          const rawAtt = await callAttendanceApi(erpAccessToken, syncUid, tokenData);
           user.cachedAttendance = processAttendanceData(rawAtt);
           user.lastAttendanceSync = new Date();
           console.log('[ERP Auth] Live attendance successfully pre-fetched and saved!');

@@ -47,7 +47,7 @@ exports.uploadNote = async (req, res) => {
       });
     }
 
-    const { title, subject, semester, unit, author } = req.body;
+    const { title, subject, semester, unit, author, branch } = req.body;
 
     if (!title || !subject) {
       return res.status(400).json({
@@ -114,6 +114,7 @@ exports.uploadNote = async (req, res) => {
       subject: subject.trim(),
       semester: semester ? semester.trim() : 'Semester 1',
       unit: unit ? unit.trim() : 'Unit 1',
+      branch: branch ? branch.trim() : 'All Branches',
       author: noteAuthor,
       uploadedBy,
       fileName: req.file.originalname,
@@ -171,6 +172,7 @@ exports.getAllNotes = async (req, res) => {
             { subject: searchRegex },
             { unit: searchRegex },
             { author: searchRegex },
+            { branch: searchRegex },
           ],
         },
       ];

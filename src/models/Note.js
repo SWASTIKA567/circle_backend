@@ -28,6 +28,11 @@ const noteSchema = new mongoose.Schema(
       default: 'Anonymous',
       trim: true,
     },
+    branch: {
+      type: String,
+      default: 'All Branches',
+      trim: true,
+    },
     uploadedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

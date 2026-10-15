@@ -6,11 +6,15 @@ const upload = require('../middleware/uploadMiddleware');
 
 // @route   GET /api/notes
 // @desc    Get all notes (supports ?category= & ?search=)
-// Accessible by EVERYONE using the app
-router.get('/', getAllNotes);
+// Authenticated students see approved notes + their own pending notes. Admins see all notes.
+router.get('/', optionalProtect, getAllNotes);
+
+// @route   GET /api/notes/file/:id
+// @desc    Stream PDF for preview / inline viewing
+router.get('/file/:id', optionalProtect, downloadNote);
 
 // @route   GET /api/notes/download/:id
-// @desc    Download note PDF attachment directly (Only approved notes for public, pending for admin)
+// @desc    Download note PDF attachment directly
 router.get('/download/:id', optionalProtect, downloadNote);
 
 // @route   POST /api/notes/upload

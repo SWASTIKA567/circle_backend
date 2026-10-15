@@ -50,6 +50,10 @@ const noteSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    gridFsId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     fileSize: {
       type: Number,
       default: 0,
